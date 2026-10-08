@@ -1,8 +1,47 @@
+diff --git a/src/Timeline.cpp b/src/Timeline.cpp
+index 9e13915..ba79ebd 100644
+--- a/src/Timeline.cpp
++++ b/src/Timeline.cpp
+@@ -63,6 +63,11 @@ namespace gamescope
+         return g_device.drmRenderFd();
+     }
+ 
++    bool CTimeline::IsSupported()
++    {
++        return g_device.drmRenderFd() >= 0 && g_device.supportsSemaphoreFd();
++    }
++
+     std::shared_ptr<VulkanTimelineSemaphore_t> CTimeline::ToVkSemaphore()
+     {
+         if ( !m_pVkSemaphore )
+diff --git a/src/Timeline.h b/src/Timeline.h
+index 54611a0..fdc28c7 100644
+--- a/src/Timeline.h
++++ b/src/Timeline.h
+@@ -39,6 +39,8 @@ namespace gamescope
+         ~CTimeline();
+ 
+         static int32_t GetDrmRenderFD();
++        // Syncobjs need the render node, and their semaphores VK_KHR_external_semaphore_fd.
++        static bool IsSupported();
+ 
+         bool IsValid() const { return m_uSyncobjHandle != 0; }
+ 
 diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
-index 54e4efc..efa6140 100644
+index 54e4efc..50eaf81 100644
 --- a/src/rendervulkan.cpp
 +++ b/src/rendervulkan.cpp
-@@ -478,10 +478,17 @@ bool CVulkanDevice::createDevice()
+@@ -459,6 +459,9 @@ bool CVulkanDevice::createDevice()
+ 
+ 		if ( strcmp(ext.extensionName, VK_EXT_HDR_METADATA_EXTENSION_NAME) == 0 )
+ 			supportsHDRMetadata = true;
++
++		if ( strcmp(ext.extensionName, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME) == 0 )
++			m_bSupportsSemaphoreFd = true;
+ 	}
+ 
+ 	vk_log.infof( "physical device %s DRM format modifiers", m_bSupportsModifiers ? "supports" : "does not support" );
+@@ -478,10 +481,17 @@ bool CVulkanDevice::createDevice()
  		};
  		vk.GetPhysicalDeviceProperties2( physDev(), &props2 );
  
@@ -21,7 +60,7 @@ index 54e4efc..efa6140 100644
  		if ( !drmProps.hasRender ) {
  			vk_log.errorf( "physical device has no render node" );
  			return false;
-@@ -507,6 +514,7 @@ bool CVulkanDevice::createDevice()
+@@ -507,6 +517,7 @@ bool CVulkanDevice::createDevice()
  			m_bHasDrmPrimaryDevId = true;
  			m_drmPrimaryDevId = makedev( drmProps.primaryMajor, drmProps.primaryMinor );
  		}
@@ -29,18 +68,53 @@ index 54e4efc..efa6140 100644
  #else
  		vk_log.warnf( "built without DRM support" );
  #endif
+@@ -586,7 +597,12 @@ bool CVulkanDevice::createDevice()
+ 	enabledExtensions.push_back( VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME );
+ 	enabledExtensions.push_back( VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME );
+ 
+-	enabledExtensions.push_back( VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME );
++	// Only explicit sync (CTimeline) shares semaphores as fds; Venus over vtest has no
++	// VK_KHR_external_semaphore_fd, and explicit sync is then not offered.
++	if ( m_bSupportsSemaphoreFd )
++		enabledExtensions.push_back( VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME );
++	else
++		vk_log.warnf( "physical device has no VK_KHR_external_semaphore_fd; explicit sync disabled" );
+ 
+ 	enabledExtensions.push_back( VK_EXT_ROBUSTNESS_2_EXTENSION_NAME );
+ #if 0
+diff --git a/src/rendervulkan.hpp b/src/rendervulkan.hpp
+index fa519db..3446a1a 100644
+--- a/src/rendervulkan.hpp
++++ b/src/rendervulkan.hpp
+@@ -862,6 +862,7 @@ public:
+ 	inline VkPipelineLayout pipelineLayout() {return m_pipelineLayout;}
+ 	inline int drmRenderFd() {return m_drmRendererFd;}
+ 	inline bool supportsModifiers() {return m_bSupportsModifiers;}
++	inline bool supportsSemaphoreFd() {return m_bSupportsSemaphoreFd;}
+ 	inline bool hasDrmPrimaryDevId() {return m_bHasDrmPrimaryDevId;}
+ 	inline dev_t primaryDevId() {return m_drmPrimaryDevId;}
+ 	inline bool supportsFp16() {return m_bSupportsFp16;}
+@@ -930,6 +931,7 @@ protected:
+ 	uint32_t m_uVendorID = 0;
+ 	bool m_bHasDrmPrimaryDevId = false;
+ 	bool m_bSupportsModifiers = false;
++	bool m_bSupportsSemaphoreFd = false;
+ 	bool m_bInitialized = false;
+ 
+ 
 diff --git a/src/wlserver.cpp b/src/wlserver.cpp
-index 9655dfd..724aadc 100644
+index 9655dfd..4e013d5 100644
 --- a/src/wlserver.cpp
 +++ b/src/wlserver.cpp
-@@ -2239,7 +2239,9 @@ bool wlserver_init( void ) {
+@@ -2239,7 +2239,10 @@ bool wlserver_init( void ) {
  	// Someday, he will be purged.
  	wlr_drm_create(wlserver.display, wlserver.wlr.renderer);
  
 -	if ( GetBackend()->SupportsExplicitSync() )
-+	// Explicit sync imports each client syncobj through the render node; without one (nested on
-+	// Venus over vtest) every commit would fail, so clients keep implicit sync instead.
-+	if ( GetBackend()->SupportsExplicitSync() && gamescope::CTimeline::GetDrmRenderFD() >= 0 )
++	// Explicit sync imports each client syncobj through the render node and shares its semaphore as
++	// an fd; without either (nested on Venus over vtest) every commit would fail, so clients keep
++	// implicit sync instead.
++	if ( GetBackend()->SupportsExplicitSync() && gamescope::CTimeline::IsSupported() )
  	{
  		create_explicit_sync();
  		wl_log.infof( "Using explicit sync when available" );

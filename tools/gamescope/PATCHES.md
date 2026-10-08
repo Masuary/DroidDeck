@@ -55,4 +55,6 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   device has no primary node`, then `no render node`. Only the DRM backend scans out through the
   primary node, and a nested gamescope runs without a render node exactly as it does on a driver
   with no VK_EXT_physical_device_drm; both checks now apply to session-based backends alone.
-  Explicit sync, which imports client syncobjs through the render node, is not offered without one.
+  Explicit sync, which imports client syncobjs through the render node and shares their semaphores
+  as fds, is not offered without one or without VK_KHR_external_semaphore_fd (which Venus over vtest
+  also lacks); that extension is the only thing that needed it, so it is now optional.
