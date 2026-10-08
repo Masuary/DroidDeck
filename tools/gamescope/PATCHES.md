@@ -66,3 +66,6 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   modifier allows a mutable image, the image is made without MUTABLE_FORMAT and its sRGB-format
   ("linear") view uses the raw format instead. Composition writes through the raw view anyway; what
   is sampled from these images (cursor, blank texture) loses hardware sRGB decode.
+- `0122-log-failing-pipeline-variant.patch` - this fork, diagnostic: when vkCreateComputePipelines
+  fails, log the shader type and specialization values, so a driver that refuses only some
+  composite variants (PowerVR through Venus: VK_ERROR_UNKNOWN) shows which.

@@ -1,0 +1,14 @@
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+index 00e7c77..6a222c0 100644
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -1219,6 +1219,9 @@ VkPipeline CVulkanDevice::compilePipeline(uint32_t layerCount, uint32_t ycbcrMas
+ 	VkResult res = vk.CreateComputePipelines(device(), VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &result);
+ 	if (res != VK_SUCCESS) {
+ 		vk_errorf( res, "vkCreateComputePipelines failed" );
++		// Which variant: on a driver that refuses some, this is what tells them apart.
++		vk_log.errorf( "  shader type %u layers %u ycbcr 0x%x blur %u debug %u colorspace 0x%x eotf %u itm %u",
++			(uint32_t)type, layerCount, ycbcrMask, blur_layer_count, composite_debug, colorspace_mask, output_eotf, (uint32_t)itm_enable );
+ 		return VK_NULL_HANDLE;
+ 	}
+ 
