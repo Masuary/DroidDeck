@@ -1,0 +1,46 @@
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+index 54e4efc..efa6140 100644
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -478,10 +478,17 @@ bool CVulkanDevice::createDevice()
+ 		};
+ 		vk.GetPhysicalDeviceProperties2( physDev(), &props2 );
+ 
+-		if ( !GetBackend()->UsesVulkanSwapchain() && !drmProps.hasPrimary ) {
++		// Only the DRM backend scans out through the primary node. Nested on a Wayland compositor
++		// neither node is required - the same as a driver without VK_EXT_physical_device_drm - and
++		// Venus over vtest (Android's PowerVR driver behind it) reports none.
++		bool bNested = !GetBackend()->IsSessionBased();
++		if ( !GetBackend()->UsesVulkanSwapchain() && !bNested && !drmProps.hasPrimary ) {
+ 			vk_log.errorf( "physical device has no primary node" );
+ 			return false;
+ 		}
++		if ( !drmProps.hasRender && bNested ) {
++			vk_log.warnf( "physical device has no render node; continuing without one (nested)" );
++		} else {
+ 		if ( !drmProps.hasRender ) {
+ 			vk_log.errorf( "physical device has no render node" );
+ 			return false;
+@@ -507,6 +514,7 @@ bool CVulkanDevice::createDevice()
+ 			m_bHasDrmPrimaryDevId = true;
+ 			m_drmPrimaryDevId = makedev( drmProps.primaryMajor, drmProps.primaryMinor );
+ 		}
++		}
+ #else
+ 		vk_log.warnf( "built without DRM support" );
+ #endif
+diff --git a/src/wlserver.cpp b/src/wlserver.cpp
+index 9655dfd..724aadc 100644
+--- a/src/wlserver.cpp
++++ b/src/wlserver.cpp
+@@ -2239,7 +2239,9 @@ bool wlserver_init( void ) {
+ 	// Someday, he will be purged.
+ 	wlr_drm_create(wlserver.display, wlserver.wlr.renderer);
+ 
+-	if ( GetBackend()->SupportsExplicitSync() )
++	// Explicit sync imports each client syncobj through the render node; without one (nested on
++	// Venus over vtest) every commit would fail, so clients keep implicit sync instead.
++	if ( GetBackend()->SupportsExplicitSync() && gamescope::CTimeline::GetDrmRenderFD() >= 0 )
+ 	{
+ 		create_explicit_sync();
+ 		wl_log.infof( "Using explicit sync when available" );

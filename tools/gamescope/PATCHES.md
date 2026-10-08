@@ -49,8 +49,10 @@ library list, before anything is published.
 
 Sixteen more of Armada's patches are DRM/lease/HDR-on-KMS work for a native display, which this
 app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the runtime has.
-- `0120-nested-backend-without-primary-node.patch` - this fork: gamescope refused any device
-  without a DRM primary node unless its backend presents through a Vulkan swapchain, so the nested
-  Wayland backend failed on Android's PowerVR driver through Venus (`physical device has no primary
-  node`), which exposes only a render node. Only the DRM backend scans out through the primary node,
-  so the check now applies to session-based backends alone; the primary dev id was already optional.
+- `0120-nested-backend-without-drm-nodes.patch` - this fork: gamescope required a DRM primary node
+  (unless presenting through a Vulkan swapchain) and a render node. Venus over vtest - Android's
+  PowerVR driver behind it - reports neither, so the nested Wayland backend died with `physical
+  device has no primary node`, then `no render node`. Only the DRM backend scans out through the
+  primary node, and a nested gamescope runs without a render node exactly as it does on a driver
+  with no VK_EXT_physical_device_drm; both checks now apply to session-based backends alone.
+  Explicit sync, which imports client syncobjs through the render node, is not offered without one.
