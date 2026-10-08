@@ -113,8 +113,11 @@ class VenusServerComponent(private val logFile: File?) : SessionPart() {
             catch (e: Exception) { Log.w(TAG, "could not open $it", e); null }
         }
         // --no-virgl: the build has no GL renderer, and asking for one fails every client.
-        // --multi-clients: gamescope, the client and each game connect on their own.
-        val command = "${binary.absolutePath} --venus --no-virgl --multi-clients --socket-path ${socket.absolutePath}"
+        // No --multi-clients: the server forks a renderer per client (gamescope, the client, each
+        // game), so one client's exit cannot take the others down - in one shared renderer a
+        // disconnect aborted the whole server ("pthread_mutex_lock called on a destroyed mutex").
+        // Clients share buffers as dma_buf fds, never by resource id, so nothing needs one process.
+        val command = "${binary.absolutePath} --venus --no-virgl --socket-path ${socket.absolutePath}"
         pid = HostProcess.start(command, arrayOf("HOME=" + context.filesDir), context.filesDir, null) { line ->
             Log.i(TAG, line)
             if (out != null) synchronized(out) { out.println(line); out.flush() }

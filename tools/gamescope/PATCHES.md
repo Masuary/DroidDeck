@@ -58,3 +58,11 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   Explicit sync, which imports client syncobjs through the render node and shares their semaphores
   as fds, is not offered without one or without VK_KHR_external_semaphore_fd (which Venus over vtest
   also lacks); that extension is the only thing that needed it, so it is now optional.
+- `0121-shared-images-without-mutable-format.patch` - this fork: gamescope makes every flippable
+  (exported) image mutable with an [UNORM, sRGB] view list. Android's PowerVR D-Series driver only
+  offers the LINEAR modifier for shared images and refuses MUTABLE_FORMAT on it with or without a
+  view list (`VK_ERROR_FORMAT_NOT_SUPPORTED`; tools/venus/probes/vkprobe3.c), so no modifier
+  qualified and `CVulkanTexture::BInit` asserted `modifiers.size() > 0`. When no exportable
+  modifier allows a mutable image, the image is made without MUTABLE_FORMAT and its sRGB-format
+  ("linear") view uses the raw format instead. Composition writes through the raw view anyway; what
+  is sampled from these images (cursor, blank texture) loses hardware sRGB decode.

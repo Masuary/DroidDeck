@@ -1,0 +1,59 @@
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+index 47a122f..00e7c77 100644
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -2264,6 +2264,24 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
+ 			numPossibleModifiers = modifiers.size();
+ 		}
+ 
++		// Some drivers refuse a mutable-format image for every exportable modifier (Android's
++		// PowerVR D-Series driver: LINEAR only, never mutable). Then the image is made without
++		// MUTABLE_FORMAT and its sRGB view falls back to the raw format.
++		for ( int nAttempt = 0; nAttempt < 2 && modifiers.empty(); nAttempt++ )
++		{
++		if ( nAttempt == 1 )
++		{
++			if ( !( imageInfo.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT ) )
++				break;
++			imageInfo.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
++			if ( imageInfo.pNext == &formatList )
++				imageInfo.pNext = formatList.pNext;
++			m_bNoSrgbView = true;
++			static bool s_bWarned = false;
++			if ( !std::exchange( s_bWarned, true ) )
++				vk_log.warnf( "no exportable modifier allows a mutable format; shared images get no sRGB view" );
++		}
++
+ 		for ( size_t i = 0; i < numPossibleModifiers; i++ )
+ 		{
+ 			uint64_t modifier = possibleModifiers[i];
+@@ -2284,6 +2302,7 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
+ 
+ 			modifiers.push_back( modifier );
+ 		}
++		}
+ 
+ 		assert( modifiers.size() > 0 );
+ 
+@@ -2618,7 +2637,7 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
+ 				.usage = usage & ~VK_IMAGE_USAGE_STORAGE_BIT,
+ 			};
+ 			createInfo.pNext = &viewUsageInfo;
+-			createInfo.format = DRMFormatToVulkan(drmFormat, true);
++			createInfo.format = DRMFormatToVulkan(drmFormat, !m_bNoSrgbView);
+ 			res = g_device.vk.CreateImageView(g_device.device(), &createInfo, nullptr, &m_linearView);
+ 			if ( res != VK_SUCCESS ) {
+ 				vk_errorf( res, "vkCreateImageView failed" );
+diff --git a/src/rendervulkan.hpp b/src/rendervulkan.hpp
+index 3446a1a..b035aa7 100644
+--- a/src/rendervulkan.hpp
++++ b/src/rendervulkan.hpp
+@@ -221,6 +221,8 @@ private:
+ 	VkDeviceMemory m_vkImageMemory = VK_NULL_HANDLE;
+ 	
+ 	VkImageView m_srgbView = VK_NULL_HANDLE;
++	// The image could not be made mutable, so its "linear" (sRGB-format) view is the raw format.
++	bool m_bNoSrgbView = false;
+ 	VkImageView m_linearView = VK_NULL_HANDLE;
+ 
+ 	VkImageView m_lumaView = VK_NULL_HANDLE;
