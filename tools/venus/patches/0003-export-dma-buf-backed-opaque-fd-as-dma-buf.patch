@@ -1,0 +1,48 @@
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 1abc23a..0659759 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -6,6 +6,8 @@
+ #include "vkr_device_memory.h"
+ 
+ #include <math.h>
++#include <stdio.h>
++#include <unistd.h>
+ 
+ #include "vn_protocol_renderer_transport.h"
+ 
+@@ -535,6 +537,20 @@ vkr_device_memory_release(struct vkr_device_memory *mem)
+       close(mem->udmabuf_fd);
+ }
+ 
++static bool
++vkr_fd_is_dma_buf(int fd, uint64_t blob_size)
++{
++   char path[32];
++   char target[16] = "";
++   snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
++   const ssize_t len = readlink(path, target, sizeof(target) - 1);
++   if (len < (ssize_t)strlen("/dmabuf:") || strncmp(target, "/dmabuf:", strlen("/dmabuf:")))
++      return false;
++   const off_t size = lseek(fd, 0, SEEK_END);
++   lseek(fd, 0, SEEK_SET);
++   return size >= 0 && (uint64_t)size >= blob_size;
++}
++
+ bool
+ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+                               uint64_t blob_size,
+@@ -642,6 +658,13 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+       }
+    }
+ 
++   /* Some drivers report no dma_buf export for buffers yet hand out dma_bufs for every
++    * allocation, opaque fds included (Android's PowerVR D-Series driver). vtest can only pass a
++    * dma_buf or shm on, so an opaque fd that is a dma_buf big enough for the blob goes on as one.
++    */
++   if (fd_type == VIRGL_RESOURCE_FD_OPAQUE && vkr_fd_is_dma_buf(fd, blob_size))
++      fd_type = VIRGL_RESOURCE_FD_DMABUF;
++
+    if (fd_type == VIRGL_RESOURCE_FD_DMABUF) {
+       const off_t dma_buf_size = lseek(fd, 0, SEEK_END);
+       if (dma_buf_size < 0 || (uint64_t)dma_buf_size < blob_size) {
