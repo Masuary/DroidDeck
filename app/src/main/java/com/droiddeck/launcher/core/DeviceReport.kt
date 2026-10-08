@@ -119,6 +119,9 @@ object DeviceReport {
         k("Driver mode", SessionPrefs.gpuDriverMode(context) +
             (com.droiddeck.launcher.gpu.DriverPairs.recommendedKey(gpu, com.droiddeck.launcher.gpu.DriverPairs.from(
                 com.droiddeck.launcher.gpu.TurnipReleases.cached(context)))?.let { " (recommended pair: $it)" } ?: ""))
+        k("Venus", if (com.droiddeck.launcher.gpu.Venus.wanted(context))
+            "on (server ${com.droiddeck.launcher.gpu.Venus.serverBinary(context).name}, socket ${com.droiddeck.launcher.gpu.Venus.socket(context)})"
+            else "off")
         val turnip = TurnipDriver(context)
         val androidChoice = SessionPrefs.androidDriver(context)
         k("Display driver (chosen)", if (androidChoice.isEmpty()) "Auto -> ${turnip.autoId()}" else androidChoice)

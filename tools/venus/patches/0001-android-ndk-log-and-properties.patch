@@ -1,0 +1,27 @@
+diff --git i/src/mesa/util/os_misc.c w/src/mesa/util/os_misc.c
+index ca9bf7d..2d5144b 100644
+--- i/src/mesa/util/os_misc.c
++++ w/src/mesa/util/os_misc.c
+@@ -55,8 +55,11 @@
+ #if DETECT_OS_ANDROID
+ #  define LOG_TAG "MESA"
+ #  include <unistd.h>
+-#  include <log/log.h>
+-#  include <cutils/properties.h>
++#  include <android/log.h>
++#  include <sys/system_properties.h>
++#  define PROPERTY_VALUE_MAX PROP_VALUE_MAX
++#  define PROPERTY_KEY_MAX 32
++#  define property_get(k, v, d) __system_property_get((k), (v))
+ #elif DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || DETECT_OS_HURD
+ #  include <unistd.h>
+ #elif DETECT_OS_OPENBSD || DETECT_OS_FREEBSD
+@@ -117,7 +120,7 @@ os_log_message(const char *message)
+    fputs(message, fout);
+    fflush(fout);
+ #  if DETECT_OS_ANDROID
+-   LOG_PRI(ANDROID_LOG_ERROR, LOG_TAG, "%s", message);
++   __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "%s", message);
+ #  endif
+ #endif
+ }

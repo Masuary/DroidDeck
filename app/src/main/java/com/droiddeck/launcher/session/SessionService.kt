@@ -2,6 +2,8 @@ package com.droiddeck.launcher.session
 
 import com.droiddeck.launcher.gpu.LinuxVulkanDriver
 import com.droiddeck.launcher.gpu.LinuxVulkanDriverManager
+import com.droiddeck.launcher.gpu.Venus
+import com.droiddeck.launcher.gpu.VenusServerComponent
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -62,6 +64,8 @@ class SessionService : Service() {
     private val components = java.util.concurrent.CopyOnWriteArrayList<SessionPart>()
     /** The Steam Deck controller's sysfs binds (SteamDeckPad), when this session has one. */
     private var deckBinds: List<String> = emptyList()
+    /** The Venus ICD manifest when this session runs on Venus (a non-Adreno GPU), else null. */
+    private var venusManifest: File? = null
     private val stopLock = Any()
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -308,6 +312,11 @@ class SessionService : Service() {
         val fastPathAt = guest.size
 
         val pulse = startAudio(guest, sessionDir)
+        if (venusManifest != null) {
+            val server = VenusServerComponent(File(sessionDir, "venus.log"))
+            server.attach(this)
+            components.add(server)
+        }
 
         guest.add("BL_WIDTH=" + size.first)
         guest.add("BL_HEIGHT=" + size.second)
@@ -556,13 +565,21 @@ class SessionService : Service() {
         // import falls back to. One driver for every session: the driver's shader cache is keyed on
         // its build, and with one per mode every emulator compiled its shaders twice.
         val linuxDriverId = SessionPrefs.linuxDriver(this)
-        LinuxVulkanDriver.resolveIcdPath(this, linuxDriverId)
+        // Venus (PowerVR, Mali): its ICD goes through the same checked path as an imported driver,
+        // and replaces it - no Turnip build can drive this GPU.
+        venusManifest = if (Venus.wanted(this)) Venus.installGuestDriver(this) else null
+        val venus = venusManifest
+        if (venus != null) {
+            guest.add(LinuxVulkanDriver.ENV + "=" + venus.path)
+            guest.addAll(Venus.guestEnvironment(this))
+            Log.i(TAG, "vulkan: Venus on the system driver ($venus)")
+        } else LinuxVulkanDriver.resolveIcdPath(this, linuxDriverId)
             ?.let { guest.add(LinuxVulkanDriver.ENV + "=" + it) }
         // Turnip's own debug switches, for the runtime's driver and everything on it. The file in
         // Downloads holds the value verbatim ("sysmem", "sysmem,deck_emu"); with nothing there, an
         // imported driver from the A710/A720/A722 legs gets "sysmem" on its own, which is what both
         // its authors advise for those GPUs and what nothing else in the list needs.
-        tuDebug(linuxDriverId)?.let { guest.add("TU_DEBUG=$it") }
+        if (venus == null) tuDebug(linuxDriverId)?.let { guest.add("TU_DEBUG=$it") }
         // Zink renders the client's UI (Chromium -> ANGLE -> Zink -> Turnip). Lazy descriptors is
         // the mode Zink recommends where the driver has no descriptor buffer, and what Ludashi ships
         // by default for its Zink path; a switch here because on one Fold the menus run at 14 fps.

@@ -337,6 +337,12 @@ public final class TurnipDriver {
             if (forced.startsWith("a8")) return DRIVER_A8XX;
             if (forced.startsWith("a7")) return DRIVER_A7XX;
         }
+        // No Adreno (PowerVR, Mali): no Turnip build finds a GPU here, and the compositor would
+        // present nothing. The system driver is the only one that can.
+        if (GpuInfo.Companion.detect().getFamily() == GpuInfo.Family.NOT_ADRENO) {
+            Log.i(TAG, "not an Adreno GPU: the compositor uses the system Vulkan driver");
+            return null;
+        }
         String model = gpuModel();
         Log.i(TAG, "gpu model: " + (model == null ? "unknown" : model));
         if (model != null) {
