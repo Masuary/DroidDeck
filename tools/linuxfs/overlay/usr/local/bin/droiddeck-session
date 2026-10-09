@@ -162,6 +162,9 @@ if [ -z "${BL_INSIDE:-}" ]; then
     fi
   fi
   args=(--backend wayland --expose-wayland -f -W "$width" -H "$height" -w "$nested" -h "$height")
+  # Venus/vtest cannot import the clients' dma-bufs. Keep the experimental Pixel
+  # session on the composition path while its clients use shared-memory buffers.
+  [ "${BL_VENUS:-0}" = 1 ] && args+=(--force-composition)
   [ "$nested" != "$width" ] && args+=(-S stretch)
   # -r is what gamescope advertises as the refresh rate, and what a game reads as the display's.
   # Left unset it defaults to 60, so a 120 Hz panel offers only 60 Hz in game settings. The FPS
@@ -207,6 +210,13 @@ fi
 
 # gamescope manages X windows: toolkits go through Xwayland, not gamescope's own Wayland socket.
 export GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb SDL_VIDEODRIVER=x11
+if [ "${BL_VENUS:-0}" = 1 ]; then
+  # The existing Pixel port reaches sign-in with software GL for Steam's UI.
+  # Apply this inside gamescope: the outer compositor still uses Venus/PowerVR.
+  export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+  export DISABLE_GAMESCOPE_WSI=1 MESA_VK_WSI_DEBUG=sw
+  echo "== experimental Venus: software client GL and shared-memory WSI"
+fi
 # gamescope's reaper waits for every process left under it before the compositor comes down. A
 # process a game left behind - a Wine service blocked on a server that is already gone - is
 # reparented there when the client exits, and the screen stays black on it for good. Nothing of

@@ -90,6 +90,7 @@ object Venus {
 
     /** What the guest needs to reach the server: the Venus ICD's vtest transport and its socket. */
     fun guestEnvironment(context: Context): List<String> = listOf(
+        "BL_VENUS=1",
         "VN_DEBUG=vtest",
         "VTEST_SOCKET_NAME=" + socket(context).absolutePath,
     )
