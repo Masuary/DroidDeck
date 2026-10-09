@@ -451,15 +451,16 @@ static int dev_init(void) {
     g_vk.GetPhysicalDeviceMemoryProperties(g_pd, &g_memprops);
 
     /* Verify the dmabuf-import extensions are present, and log any that are missing. */
-    const char *dev_exts[7] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_external_memory_fd",
+    const char *dev_exts[8] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_external_memory_fd",
                                "VK_EXT_external_memory_dma_buf", "VK_EXT_image_drm_format_modifier",
-                               "VK_KHR_image_format_list", NULL, NULL};
-    uint32_t n_dev_exts = 5;
+                               "VK_KHR_image_format_list", VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
+                               NULL, NULL};
+    uint32_t n_dev_exts = 6;
     uint32_t ne = 0;
     g_vk.EnumerateDeviceExtensionProperties(g_pd, NULL, &ne, NULL);
     VkExtensionProperties *exts = calloc(ne ? ne : 1, sizeof(*exts));
     g_vk.EnumerateDeviceExtensionProperties(g_pd, NULL, &ne, exts);
-    for (unsigned i = 0; i < 5; i++)
+    for (unsigned i = 0; i < n_dev_exts; i++)
         if (!has_ext(exts, ne, dev_exts[i]))
             LOGE("present: driver MISSING %s (dmabuf import will fail)", dev_exts[i]);
     /* HDR sessions only: the HDR10 swapchain (frame generation) can carry the game's metadata. */
@@ -498,6 +499,7 @@ static int dev_init(void) {
     }
     vk_loader_load_device(g_dev);
     g_vk.GetDeviceQueue(g_dev, g_qfam, 0, &g_queue);
+    droiddeck_log("gpu", "dma-buf handoff: preserve GENERAL on acquire and release after reads (foreign queue enabled)");
     if (want_sem_fd) {
         g_import_sem_fd = (PFN_vkImportSemaphoreFdKHR)g_vk.GetDeviceProcAddr(g_dev, "vkImportSemaphoreFdKHR");
         VkSemaphoreCreateInfo wsci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -1150,6 +1152,30 @@ static void record_draw(VkCommandBuffer cmd, const struct vkp_draw *d, const VkI
                       target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, blit, filter);
 }
 
+/* Wayland clients share their image in GENERAL under foreign ownership. Reading it with an
+ * UNDEFINED acquire may discard the frame, and keeping ownership after the read makes the next
+ * producer use undefined. This release completes before the submit fence and wl_buffer.release.
+ * Blend/HDR draws restore their sources to TRANSFER_SRC_OPTIMAL before returning. */
+static void release_dmabuf_source(VkCommandBuffer cmd, const struct vkp_image *im) {
+    if (!im || !im->dmabuf) return;
+    VkImageMemoryBarrier b = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = g_qfam, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
+        .image = im->image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT};
+    g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                            0, 0, NULL, 0, NULL, 1, &b);
+}
+
+static void release_draw_sources(VkCommandBuffer cmd, const struct vkp_draw *draws, int n) {
+    for (int i = 0; i < n; i++) {
+        int seen = 0;
+        for (int j = 0; j < i; j++) if (draws[j].img == draws[i].img) { seen = 1; break; }
+        if (!seen) release_dmabuf_source(cmd, draws[i].img);
+    }
+}
+
 static void destroy_scene_image(void) {
     if (g_scene.img) hdrc_forget_image(g_scene.img); /* the HDR pass may have drawn into it */
     if (g_scene.img) blendp_forget_image(g_scene.img);
@@ -1611,7 +1637,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
         if (seen || !im) continue;
         if (im->dmabuf) {
             bars[nb++] = (VkImageMemoryBarrier){
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
                 .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
                 .image = im->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
@@ -1681,6 +1707,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
                     pass ? VK_FILTER_LINEAR : blit_filter);
         drawn++;
     }
+    release_draw_sources(cmd, draws, n);
 
     int ngen = 0;
     VkImage gens[VKP_FG_MAX_GENERATIONS] = {VK_NULL_HANDLE};
@@ -1885,7 +1912,7 @@ int vkp_map_draw(const struct vkp_draw *d, int out[8]) {
 
 /* Copy src (a client frame) into dst (a layer pool buffer) 1:1 and wait for it. Both images are
  * owned by the "foreign" queue family (the game's driver / the display) between our uses, so each
- * use acquires them and the destination is released back for the display to read. */
+ * use acquires them and both are released back after the copy. */
 int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
     if (!src || !dst || !dst->blit_dst || g_dev_state == -2 || dev_init() != 0) {
         if (wait_fd >= 0) close(wait_fd);
@@ -1901,7 +1928,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(g_cmd, &bi);
     VkImageMemoryBarrier acq[2] = {
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          .srcQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
@@ -1926,6 +1953,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
     g_vk.CmdBlitImage(g_cmd, src->image,
                       src->dmabuf ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL,
                       dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    release_dmabuf_source(g_cmd, src);
     VkImageMemoryBarrier rel = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = g_qfam,
@@ -2002,7 +2030,8 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(cmd, &bi);
     VkImageMemoryBarrier acq[2] = {
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .oldLayout = src->dmabuf ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          .srcQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
@@ -2136,7 +2165,7 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
         if (seen || !im) continue;
         if (im->dmabuf) {
             bars[nb++] = (VkImageMemoryBarrier){
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
                 .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
                 .image = im->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
@@ -2180,6 +2209,7 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
         }
         if (vkp_effects_active()) vkp_effects_set_formats(VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM);
     }
+    release_draw_sources(cmd, draws, n);
 
     int mapped_w = (int)(scene_w * g_map.kx + 0.5f), mapped_h = (int)(scene_h * g_map.ky + 0.5f);
     g_pass.rw = scene_w; g_pass.rh = scene_h;

@@ -1,8 +1,8 @@
 # Pixel 10 Pro XL investigation — 2026-10-09
 
-Status: feasibility established for native Vulkan rendering and image sharing;
-**DroidDeck/Steam support is not implemented or verified by this investigation.**
-The installed app has not been changed.
+Status: the experimental Pixel APK reaches Steam's login screen on this phone.
+The user reports flickering between DroidDeck and Steam. Stable presentation and
+game support are **not yet verified**.
 
 ## Source and device
 
@@ -86,4 +86,37 @@ with the display name **DroidDeck Pixel** through `build-pixel.yml`. The workflo
 builds the patched gamescope and current DRM preload, stages unchanged dependencies
 from the checksum-verified upstream 0.3.1 APK, then builds the APK and runs unit tests.
 Venus sessions use forced composition and software client GL as documented by the
-original experiment. The live-frame failure remains unverified and unresolved.
+original experiment.
+
+## Installed APK and flicker investigation
+
+Build `c4e47bb92b3a3623dc3a44d49b72cb1adeec1d77` passed all 254 unit tests and
+APK packaging/signature checks. The downloaded APK's SHA-256 is
+`1e5d9630e98b739ad8259f0bec07d22f015b2f68ba512833ba22ef928aeb7285`.
+The user installed it and reported reaching Steam's login screen with flicker.
+
+Session `2026-10-09-07-steam` confirms `com.droiddeck.launcher.pixel`, version
+`0.3.1-pixel-experimental`, runtime r9, Venus enabled, and the system PowerVR
+driver rendering the compositor. `frame.first` and `session.ready` occur at
+21:18:48 local time. The compositor continues receiving and presenting frames;
+there is no repeated guest exit or window recreation during that interval.
+
+The `pixel-experimental2` candidate fixes three Vulkan ownership errors:
+
+- Enable `VK_EXT_queue_family_foreign`, which the compositor already used.
+- Acquire imported client images from GENERAL instead of UNDEFINED, preserving
+  their contents.
+- Release each distinct imported source back to the foreign queue in GENERAL
+  after reading it, before the submission fence and Wayland buffer release.
+  Apply this to normal/HDR composition and layer copies; preserve cursor input
+  on its existing acquire/release path as well.
+
+These corrections follow the [Vulkan synchronization specification](https://docs.vulkan.org/spec/latest/chapters/synchronization.html).
+They are necessary correctness fixes, **not proof that the observed flicker is
+fixed**. A scaled native image-sharing probe (1280x720 BGRA DMA-BUF to 1920x1080
+RGBA via linear blit) also passes all six frames in both corrected and legacy
+modes on this phone. That test does not run through Venus or Android's display.
+The updated compositor passes the native C syntax check. Install the candidate
+over DroidDeck Pixel, stop the old session and start Steam again, and verify both
+the version and the new `dma-buf handoff` line in `wayland.log` before assessing
+whether login redraws and input are stable.
