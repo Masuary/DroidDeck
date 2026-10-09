@@ -1,7 +1,8 @@
 # DroidDeck on non-Adreno GPUs through Venus (Pixel 10 Pro XL, PowerVR)
 
-Status: **work in progress, not playable.** gamescope now initialises Vulkan on the PowerVR GPU and
-connects to DroidDeck's compositor; Steam does not appear yet. This page tracks what works, what
+Status: **work in progress, not playable.** Steam's Big Picture sign-in screen renders on the Pixel
+(gamescope on Venus/PowerVR, Steam UI GL on llvmpipe), but the display shows frozen snapshots of
+gamescope's output buffers instead of live frames. This page tracks what works, what
 does not, and why. Branch: [`pixel-venus`](https://github.com/gogetwoo/DroidDeck/tree/pixel-venus).
 
 Test device: Google Pixel 10 Pro XL (Tensor G5, **PowerVR D-Series DXT-48-1536**, driver 25.3,
@@ -35,9 +36,11 @@ glibc side somehow (see [#165](https://github.com/Droid-Deck/DroidDeck/issues/16
 | gamescope device selection | ✅ after gamescope patch 0120 |
 | Mappable memory over vtest | ✅ after venus patch 0003 |
 | gamescope Wayland backend + wlserver | ✅ |
-| gamescope flippable (output) image | ❌ `Assertion 'modifiers.size() > 0'` |
-| Client buffers (Steam/Xwayland) into gamescope | ❌ not possible over vtest yet (no import) |
-| Steam UI | ❌ |
+| gamescope flippable (output) image | ✅ after gamescope patch 0121 (no mutable format on shared images) |
+| Client buffers (Steam/Xwayland) into gamescope | ⚠️ via CPU copies: `DISABLE_GAMESCOPE_WSI=1`, `MESA_VK_WSI_DEBUG=sw` (no dma_buf import over vtest) |
+| Steam webhelper on Zink/Venus | ❌ exits silently a few seconds after Big Picture shows; stays up on llvmpipe |
+| Steam Big Picture sign-in screen | ✅ (llvmpipe GL, `--force-composition`) |
+| Live frames on screen | ❌ compositor shows each shared buffer frozen at first import (3 output images → 3 snapshots) |
 | Games (DXVK) | ❌ not attempted; PowerVR has no BC texture compression |
 
 ## Findings
@@ -79,7 +82,19 @@ vtest protocol has no import command. gamescope has to import the buffers Xwayla
 **The vtest server dies on client disconnect** in thread render-server mode
 (`FORTIFY: pthread_mutex_lock called on a destroyed mutex` in `virgl-1-gpu_ren`).
 
-## Next
+## Session 2026-10-08 (night)
+
+- **venus 0004**: `vkr_device_destroy` destroyed `dev->object_mutex` before destroying the device's
+  remaining objects, which each lock it. bionic aborts on a destroyed mutex, so any client destroying a
+  device with live objects lost its renderer. Fixed; server aborts went from 9 per session to 0.
+- **gamescope 0122** (diagnostic): the only compute pipelines that fail (`VK_ERROR_UNKNOWN`) are RCAS
+  (FSR sharpening) with a YCbCr layer, 3-8 layers. Not on the normal path.
+- `vkprobe4.c`: compute storage writes into a LINEAR, dma_buf-exportable RGBA8 image land correctly
+  (three successive fills), natively and through Venus.
+- The flicker: screenshot bursts show exactly three distinct, unchanging frames - gamescope's three
+  output images - each frozen at the content it had when DroidDeck's compositor first imported it.
+  Updates to a buffer exported from the Venus side are not visible to the compositor after import.
+
 
 1. vtest server: one process per client (no `--multi-clients`), so one client's exit cannot take
    down the rest.
