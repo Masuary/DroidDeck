@@ -681,6 +681,125 @@ BUSCONF
     # The client exits 42 when it has updated itself and wants a fresh start (steam.sh does this).
     # BL_STEAM_UI=desktop = the client's desktop UI (a window, the library as a list), which the
     # desktop's launchers ask for; gamescope shows one window at a time and the game takes over.
+    # Steam's web UI renderer flags. BL_STEAM_CEF_ARGS (Download/droiddeck-env) replaces them for
+    # an experiment, e.g. a different ANGLE backend, without a build per attempt.
+    _bl_cef=(-cef-force-gpu -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan)
+    if [ -n "${BL_STEAM_CEF_ARGS:-}" ]; then
+      read -r -a _bl_cef <<<"$BL_STEAM_CEF_ARGS"
+      echo "== steam: renderer flags from BL_STEAM_CEF_ARGS: ${_bl_cef[*]}"
+    fi
+    # Venus (the Pixel/PowerVR port) frame probe: Steam's window read straight from Xwayland, ten
+    # times a second for 90 s once it is mapped, as "== xprobe" lines here. If these frames
+    # already alternate (the compositor's probe saw gamescope's output alternate between old and
+    # new pictures), the fault is in how Steam's renderer presents to X; if they are steady, it is
+    # between Xwayland and gamescope's output. BL_XPROBE=0 turns it off.
+    if [ "${BL_VENUS:-0}" = 1 ] && [ "${BL_XPROBE:-1}" != 0 ] && command -v python3 >/dev/null 2>&1; then
+      python3 -u - <<'XPROBE' &
+import ctypes, ctypes.util, os, sys, time, zlib
+from ctypes import c_int, c_uint, c_ulong, c_long, c_void_p, c_char_p, POINTER, Structure, byref, CFUNCTYPE
+x = ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
+def say(msg):
+    print("== xprobe " + msg, flush=True)
+ERR = CFUNCTYPE(c_int, c_void_p, c_void_p)
+_ignore = ERR(lambda d, e: 0)
+x.XSetErrorHandler(_ignore)
+x.XOpenDisplay.restype = c_void_p
+x.XOpenDisplay.argtypes = [c_char_p]
+x.XDefaultRootWindow.restype = c_ulong
+x.XDefaultRootWindow.argtypes = [c_void_p]
+x.XQueryTree.argtypes = [c_void_p, c_ulong, POINTER(c_ulong), POINTER(c_ulong), POINTER(POINTER(c_ulong)), POINTER(c_uint)]
+x.XFree.argtypes = [c_void_p]
+class Attrs(Structure):
+    _fields_ = [("x", c_int), ("y", c_int), ("width", c_int), ("height", c_int), ("border_width", c_int),
+                ("depth", c_int), ("visual", c_void_p), ("root", c_ulong), ("klass", c_int),
+                ("bit_gravity", c_int), ("win_gravity", c_int), ("backing_store", c_int),
+                ("backing_planes", c_ulong), ("backing_pixel", c_ulong), ("save_under", c_int),
+                ("colormap", c_ulong), ("map_installed", c_int), ("map_state", c_int),
+                ("all_event_masks", c_long), ("your_event_mask", c_long),
+                ("do_not_propagate_mask", c_long), ("override_redirect", c_int), ("screen", c_void_p)]
+x.XGetWindowAttributes.argtypes = [c_void_p, c_ulong, POINTER(Attrs)]
+class Image(Structure):
+    _fields_ = [("width", c_int), ("height", c_int), ("xoffset", c_int), ("format", c_int),
+                ("data", c_void_p), ("byte_order", c_int), ("bitmap_unit", c_int),
+                ("bitmap_bit_order", c_int), ("bitmap_pad", c_int), ("depth", c_int),
+                ("bytes_per_line", c_int), ("bits_per_pixel", c_int), ("red_mask", c_ulong),
+                ("green_mask", c_ulong), ("blue_mask", c_ulong), ("obdata", c_void_p),
+                ("create_image", c_void_p), ("destroy_image", c_void_p)]
+x.XGetImage.restype = POINTER(Image)
+x.XGetImage.argtypes = [c_void_p, c_ulong, c_int, c_int, c_uint, c_uint, c_ulong, c_int]
+DESTROY = CFUNCTYPE(c_int, POINTER(Image))
+
+dpy = x.XOpenDisplay(None)
+if not dpy:
+    say("cannot open the X display; probe off")
+    sys.exit(0)
+root = x.XDefaultRootWindow(dpy)
+
+def windows(w):
+    r, p, kids, n = c_ulong(), c_ulong(), POINTER(c_ulong)(), c_uint()
+    if not x.XQueryTree(dpy, w, byref(r), byref(p), byref(kids), byref(n)):
+        return []
+    out = [kids[i] for i in range(n.value)]
+    if kids:
+        x.XFree(kids)
+    return out
+
+def biggest():
+    best, area, stack = None, 0, [root]
+    while stack:
+        w = stack.pop()
+        for k in windows(w):
+            a = Attrs()
+            if x.XGetWindowAttributes(dpy, k, byref(a)) and a.map_state == 2:
+                if a.width * a.height > area and a.width >= 640 and a.height >= 360:
+                    best, area = (k, a.width, a.height), a.width * a.height
+                stack.append(k)
+    return best
+
+deadline = time.time() + 180
+target = None
+while time.time() < deadline and not target:
+    target = biggest()
+    if not target:
+        time.sleep(1)
+if not target:
+    say("no mapped window of at least 640x360 within 180 s; probe off")
+    sys.exit(0)
+say("watching X window 0x%x (%dx%d): 10 samples a second for 90 s, Steam's own pixels before gamescope" % target)
+seen = {}
+start = time.time()
+row, row_t = [], 0
+while time.time() - start < 90:
+    t = time.time() - start
+    if int(t) != row_t:
+        if row:
+            say("t=%2ds frames %s" % (row_t, " ".join(row)))
+        row, row_t = [], int(t)
+        found = biggest()
+        if found and found[0] != target[0]:
+            target = found
+            say("biggest window is now 0x%x (%dx%d)" % target)
+    win, w, h = target
+    img = x.XGetImage(dpy, win, 0, 0, w, h, ~0 & 0xffffffffffffffff, 2)
+    if not img:
+        row.append("-")
+    else:
+        im = img.contents
+        data = ctypes.string_at(im.data, im.bytes_per_line * im.height)
+        DESTROY(im.destroy_image)(img)
+        crc = zlib.crc32(data[::28]) & 0xffffffff
+        if crc not in seen:
+            green = data[1::16]
+            seen[crc] = len(seen) + 1
+            if len(seen) <= 40:
+                say("t=%.1f new frame #%d %08x, mean %d" % (t, seen[crc], crc, sum(green) // max(1, len(green))))
+        row.append(str(seen[crc]))
+    time.sleep(max(0.0, 0.1 - (time.time() - start - t)))
+if row:
+    say("t=%2ds frames %s" % (row_t, " ".join(row)))
+say("done: %d distinct frames in 90 s" % len(seen))
+XPROBE
+    fi
     _bl_ui=(-gamepadui)
     [ "${BL_STEAM_UI:-}" = desktop ] && _bl_ui=()
     # Deck mode (BL_STEAMDECK=1, the Steam page's Client settings): -steamdeck is the flag that puts
@@ -741,7 +860,7 @@ BUSCONF
         done
       ) &
     fi
-    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} -clientbeta $steam_channel -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan $*"
+    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} -clientbeta $steam_channel -no-cef-sandbox ${_bl_cef[*]} $*"
     # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
     # session can never again loop in silence, which reads as a menu opening and closing by itself.
     steam_updates=0
@@ -792,8 +911,7 @@ BUSCONF
       fi
       step "starting the Steam client${BL_STEAM_UI:+ ($BL_STEAM_UI UI)}"
       "$steam_root/steamrtarm64/steam" "${_bl_ui[@]}" "${_bl_cdp[@]}" -clientbeta "$steam_channel" \
-        -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 \
-        -cef-use-gl=angle -cef-use-angle=vulkan "$@"
+        -no-cef-sandbox "${_bl_cef[@]}" "$@"
       rc=$?
       echo "== steam exited rc=$rc"
       collect_steam_logs

@@ -339,3 +339,29 @@ movie plays and then gives way to it. **Not yet verified on the phone.** The sam
 maintenance would affect any other CPU-written host-visible memory under Venus (games' uniform
 buffers, for example). If 0125 confirms the cause, the general fix belongs in the vtest/Venus
 layer.
+
+## Experimental8 installed test and experimental9 X-level probe — 2026-10-10
+
+Session `2026-10-10-11-steam` (`0.3.1-pixel-experimental8`): gamescope logs `Venus: cleaning CPU
+writes to mapped memory to the point of coherency (64-byte lines)`, so patch 0125 was active. The
+user's 68 s screen recording (scene luminance sampled at 10 Hz) shows:
+
+- 0–46 s: the startup movie's last frame (logo), steady.
+- From the first input, 46–50 s: logo and sign-in alternate every 0.1–0.3 s. Some sign-in frames
+  are incomplete, with black blocks stepping in from the bottom-right.
+- 50–58 s: the sign-in screen and the blurred Steam-menu view alternate.
+
+The cache cleaning did not change the symptom. The stale pictures are not explained by CPU→GPU
+coherency in gamescope's upload. Every probe so far sat at or after gamescope; none has looked at
+what Steam itself puts into its X window.
+
+Experimental9 adds an X-level probe to the session script (Venus only, `BL_XPROBE=0` turns it
+off). Once Steam's window is mapped, it reads it from Xwayland with `XGetImage` ten times a second
+for 90 s and writes `== xprobe` lines to `session.log`: each new frame with its id and brightness,
+then one line per second of frame ids, e.g. `t=47s frames 3 1 3 1 3 3 1 ...`. If those ids
+already alternate, the fault is in how Steam's renderer (ANGLE on llvmpipe GL) presents to X. If
+they are steady while the screen flickers, it is between Xwayland and gamescope's output.
+
+Experimental9 also adds `BL_STEAM_CEF_ARGS` (one line in `Download/droiddeck-env`), which replaces
+Steam's renderer flags (`-cef-force-gpu -cef-ozone-platform=x11 -cef-use-gl=angle
+-cef-use-angle=vulkan` by default), so renderer experiments need no build. Patch 0125 stays in.
