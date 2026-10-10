@@ -19,6 +19,10 @@ movie's last frame (DroidDeck's logo) and the sign-in screen. Experimental6 draw
 the CPU in Venus sessions (`-cef-disable-gpu`) instead of ANGLE on Vulkan over Venus.
 That stopped the flicker, but the movie's last frame then stayed over a live sign-in page;
 experimental7 also skips DroidDeck's startup movie in Venus sessions.
+Steam's GPU report then showed that the flickering UI had been drawn with llvmpipe all along,
+reaching gamescope as shm buffers; experimental8 reverts both experiments and instead makes
+gamescope clean the CPU cache after its per-frame shm staging copies (patch 0125), because the
+GPU read stale pages from that Venus-mapped memory.
 
 Status: **work in progress, not playable.** Steam's Big Picture sign-in screen renders on the Pixel
 (gamescope on Venus/PowerVR, Steam UI GL on llvmpipe), but the display shows frozen snapshots of

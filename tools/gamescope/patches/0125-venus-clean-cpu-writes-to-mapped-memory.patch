@@ -1,0 +1,99 @@
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+index b30addf..326df91 100644
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -330,6 +330,41 @@ bool CVulkanDevice::BInit(VkInstance instance, VkSurfaceKHR surface)
+ 
+ extern bool env_to_bool(const char *env);
+ 
++// Venus (BL_VENUS=1, the Pixel/PowerVR port): host-visible memory is the vendor driver's dma-buf,
++// mapped into this process by the Venus ICD, and the GPU does not snoop the CPU caches for it.
++// Nothing in the vtest path performs dma-buf cache maintenance, so what the CPU writes can sit in
++// the cache while the GPU reads whatever the pages held before: Steam's window, uploaded from
++// Xwayland's shm every frame, came out as older frames and other sessions' leftovers. Clean the
++// written range to the point of coherency before the GPU reads it. EL0 may do this on Linux
++// (SCTLR_EL1.UCI); CTR_EL0 gives the smallest data cache line.
++void vulkan_venus_clean_cpu_writes( const void *pData, size_t uSize )
++{
++#if defined(__aarch64__)
++	static const bool s_bVenus = env_to_bool( getenv( "BL_VENUS" ) );
++	if ( !s_bVenus || !pData || !uSize )
++		return;
++
++	uint64_t ulCtr;
++	asm volatile( "mrs %0, ctr_el0" : "=r"( ulCtr ) );
++	const uintptr_t uLine = uintptr_t( 4 ) << ( ( ulCtr >> 16 ) & 0xf );
++
++	static bool s_bSaid = false;
++	if ( !s_bSaid )
++	{
++		s_bSaid = true;
++		vk_log.infof( "Venus: cleaning CPU writes to mapped memory to the point of coherency (%zu-byte lines)", (size_t)uLine );
++	}
++
++	const uintptr_t uEnd = uintptr_t( pData ) + uSize;
++	for ( uintptr_t p = uintptr_t( pData ) & ~( uLine - 1 ); p < uEnd; p += uLine )
++		asm volatile( "dc civac, %0" :: "r"( p ) : "memory" );
++	asm volatile( "dsb sy" ::: "memory" );
++#else
++	(void)pData;
++	(void)uSize;
++#endif
++}
++
+ bool CVulkanDevice::selectPhysDev(VkSurfaceKHR surface)
+ {
+ 	uint32_t deviceCount = 0;
+@@ -1715,6 +1750,7 @@ void CVulkanCmdBuffer::uploadConstants(Args&&... args)
+ 	auto [ptr, offset] = m_device->uploadBufferData(sizeof(data));
+ 	m_renderBufferOffset = offset;
+ 	memcpy(ptr, &data, sizeof(data));
++	vulkan_venus_clean_cpu_writes(ptr, sizeof(data));
+ }
+ 
+ void CVulkanCmdBuffer::bindPipeline(VkPipeline pipeline)
+@@ -3213,6 +3249,7 @@ void vulkan_update_luts(const gamescope::Rc<CVulkanTexture>& lut1d, const gamesc
+ 	void *lut3d_dst = ((uint8_t*)base_dst) + lut1d_size;
+ 	memcpy(lut1d_dst, lut1d_data, lut1d_size);
+ 	memcpy(lut3d_dst, lut3d_data, lut3d_size);
++	vulkan_venus_clean_cpu_writes(base_dst, lut1d_size + lut3d_size);
+ 
+ 	auto cmdBuffer = g_device.commandBuffer();
+ 	cmdBuffer->copyBufferToImage(g_device.uploadBuffer(), base_offset, 0, lut1d);
+@@ -3246,6 +3283,7 @@ gamescope::OwningRc<CVulkanTexture> vulkan_create_flat_texture( uint32_t width,
+ 		dst[i + 2] = r;
+ 		dst[i + 3] = a;
+ 	}
++	vulkan_venus_clean_cpu_writes( dst, width * height * 4 );
+ 
+ 	auto cmdBuffer = g_device.commandBuffer();
+ 	cmdBuffer->copyBufferToImage(g_device.uploadBuffer(), offset, 0, texture.get());
+@@ -3809,6 +3847,7 @@ gamescope::OwningRc<CVulkanTexture> vulkan_create_texture_from_bits( uint32_t wi
+ 	size_t size = width * height * DRMFormatGetBPP(drmFormat);
+ 	auto [ dst, offset ] = g_device.uploadBufferData(size);
+ 	memcpy( dst, bits, size );
++	vulkan_venus_clean_cpu_writes( dst, size );
+ 
+ 	auto cmdBuffer = g_device.commandBuffer();
+ 
+@@ -4943,6 +4982,7 @@ gamescope::OwningRc<CVulkanTexture> vulkan_create_texture_from_wlr_buffer( struc
+ 	}
+ 
+ 	memcpy( dst, src, stride * height );
++	vulkan_venus_clean_cpu_writes( dst, stride * height );
+ 
+ 	g_device.vk.UnmapMemory( g_device.device(), bufferMemory );
+ 
+diff --git a/src/rendervulkan.hpp b/src/rendervulkan.hpp
+index 94d28f5..384e85f 100644
+--- a/src/rendervulkan.hpp
++++ b/src/rendervulkan.hpp
+@@ -470,6 +470,8 @@ void vulkan_wait( uint64_t ulSeqNo, bool bReset );
+ gamescope::Rc<CVulkanTexture> vulkan_get_last_output_image( bool partial, bool defer );
+ // The output image the next full composite writes (nested backends without a swapchain).
+ gamescope::Rc<CVulkanTexture> vulkan_get_next_output_image();
++// Venus: make CPU writes to mapped Vulkan memory visible to the GPU (no-op elsewhere).
++void vulkan_venus_clean_cpu_writes( const void *pData, size_t uSize );
+ gamescope::Rc<CVulkanTexture> vulkan_acquire_screenshot_texture(uint32_t width, uint32_t height, bool exportable, uint32_t drmFormat, EStreamColorspace colorspace = k_EStreamColorspace_Unknown);
+ gamescope::Rc<CVulkanTexture> vulkan_acquire_capture_texture(uint32_t width, uint32_t height, bool exportable, uint32_t drmFormat, EStreamColorspace colorspace = k_EStreamColorspace_Unknown);
+ uint32_t vulkan_get_rgb10_capture_format( void );

@@ -81,3 +81,11 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   regard to `wl_buffer.release`; before composing into one the host compositor still holds, wait up
   to 100 ms (dispatching Wayland events) for its release, so a host presenting more slowly than
   gamescope composites never reads a frame being overwritten. Waits and timeouts are logged.
+- `0125-venus-clean-cpu-writes-to-mapped-memory.patch` - this fork, `BL_VENUS=1` on aarch64 only:
+  host-visible memory under Venus is the vendor driver's dma-buf mapped into gamescope, and the
+  GPU does not snoop the CPU caches for it, while nothing on the vtest path does dma-buf cache
+  maintenance. Every CPU write gamescope makes into mapped memory before a GPU read (the per-frame
+  staging copy of each wl_shm window, which is how Xwayland hands over Steam's UI under Venus, plus
+  constants, LUTs and texture uploads) is now cleaned to the point of coherency (`dc civac` per
+  line, `dsb sy`). Without it the GPU copied stale pages: older frames, the startup movie's last
+  frame, and left-overs from earlier sessions, i.e. the Pixel flicker.

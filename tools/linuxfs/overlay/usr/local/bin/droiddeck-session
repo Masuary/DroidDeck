@@ -681,29 +681,6 @@ BUSCONF
     # The client exits 42 when it has updated itself and wants a fresh start (steam.sh does this).
     # BL_STEAM_UI=desktop = the client's desktop UI (a window, the library as a list), which the
     # desktop's launchers ask for; gamescope shows one window at a time and the game takes over.
-    # Steam's web UI renders through ANGLE on Vulkan. Under Venus (the Pixel/PowerVR port) that
-    # Vulkan is Venus with shared-memory WSI, and the frames steamwebhelper hands Xwayland
-    # alternate with old ones: the experimental5 frame probe saw gamescope receive the startup
-    # movie's last frame and the sign-in screen in turn. Draw the UI on the CPU there instead.
-    # BL_VENUS_CEF_GPU=1 (Download/droiddeck-env) keeps the GPU path for comparison.
-    _bl_cef=(-cef-force-gpu -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan)
-    if [ "${BL_VENUS:-0}" = 1 ] && [ "${BL_VENUS_CEF_GPU:-0}" != 1 ]; then
-      _bl_cef=(-cef-disable-gpu -cef-disable-gpu-compositing -cef-ozone-platform=x11)
-      echo "== experimental Venus: Steam's UI drawn on the CPU (BL_VENUS_CEF_GPU=1 for ANGLE/Vulkan)"
-    fi
-    # Under Venus the startup movie's layer never leaves Steam's Big Picture window: on the GPU
-    # path its last frame alternated with the sign-in screen, drawn on the CPU it stays on top of a
-    # live, focused sign-in page (experimental6). Steam plays the movie only when its override file
-    # is there, so set DroidDeck's movie aside for this session; the app stages it again at the next
-    # launch. BL_VENUS_STARTUP_MOVIE=1 keeps it.
-    if [ "${BL_VENUS:-0}" = 1 ] && [ "${BL_VENUS_STARTUP_MOVIE:-0}" != 1 ]; then
-      _bl_movies=$steam_root/config/uioverrides/movies
-      _bl_moved=
-      for _bl_m in bigpicture_startup.webm steam_os_startup.webm; do
-        [ -f "$_bl_movies/$_bl_m" ] && mv -f "$_bl_movies/$_bl_m" "$_bl_movies/$_bl_m.venus-off" && _bl_moved="$_bl_moved $_bl_m"
-      done
-      echo "== experimental Venus: startup movie off for this session (${_bl_moved# }; BL_VENUS_STARTUP_MOVIE=1 keeps it)"
-    fi
     _bl_ui=(-gamepadui)
     [ "${BL_STEAM_UI:-}" = desktop ] && _bl_ui=()
     # Deck mode (BL_STEAMDECK=1, the Steam page's Client settings): -steamdeck is the flag that puts
@@ -764,7 +741,7 @@ BUSCONF
         done
       ) &
     fi
-    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} -clientbeta $steam_channel -no-cef-sandbox ${_bl_cef[*]} $*"
+    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} -clientbeta $steam_channel -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan $*"
     # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
     # session can never again loop in silence, which reads as a menu opening and closing by itself.
     steam_updates=0
@@ -815,7 +792,8 @@ BUSCONF
       fi
       step "starting the Steam client${BL_STEAM_UI:+ ($BL_STEAM_UI UI)}"
       "$steam_root/steamrtarm64/steam" "${_bl_ui[@]}" "${_bl_cdp[@]}" -clientbeta "$steam_channel" \
-        -no-cef-sandbox "${_bl_cef[@]}" "$@"
+        -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 \
+        -cef-use-gl=angle -cef-use-angle=vulkan "$@"
       rc=$?
       echo "== steam exited rc=$rc"
       collect_steam_logs

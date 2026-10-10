@@ -303,3 +303,39 @@ stages them again at the next launch. `BL_VENUS_STARTUP_MOVIE=1` keeps the movie
 `experimental Venus: startup movie off` in `session.log`, then for a sign-in screen that stays up.
 If Steam falls back to a built-in movie and gets stuck the same way, the problem is video playback
 in steamwebhelper itself. **Not yet verified on the phone.**
+
+## Experimental7 installed test, a corrected diagnosis, and experimental8 — 2026-10-10
+
+Session `2026-10-10-09-steam` (`0.3.1-pixel-experimental7`, CPU UI, no startup movie): every
+probe is `6c4a016d`, 100% black, while `webhelper_js.txt` shows the sign-in page live and focused.
+
+Steam's GPU report (`webhelper_gpu.txt`) corrects the experimental6 reasoning:
+
+| Sessions | Steam's UI renderer |
+| --- | --- |
+| up to 14:21 (all flickering builds) | `ANGLE (Mesa, llvmpipe ... OpenGL 4.6)`, i.e. CPU GL, **not** Venus |
+| 14:41 and 14:55 (experimental6/7, `-cef-disable-gpu`) | `ANGLE (... Vulkan 1.4.317 (Virtio-GPU Venus ...))` |
+
+So the flickering UI was never rendered through Venus. Under `LIBGL_ALWAYS_SOFTWARE` it is drawn
+on the CPU and reaches gamescope as Xwayland **wl_shm** buffers. Experimental6/7 pushed Steam's GPU
+process onto Venus instead, and their black and logo-only windows came from that change. Both are
+reverted in experimental8.
+
+What changes the picture between Steam and gamescope's output is gamescope's shm import
+(`vulkan_create_texture_from_wlr_buffer`). For every commit it allocates a host-visible staging
+buffer, `memcpy`s the window into the mapping, and has the GPU copy it into a texture. Under Venus
+that mapping is PowerVR's dma-buf mapped into the guest, the GPU does not snoop the CPU caches,
+and nothing on the vtest path does dma-buf cache maintenance (`DMA_BUF_IOCTL_SYNC`). The GPU can
+then copy whatever the recycled pages last held in memory. That explains every symptom: stale
+whole frames, the startup movie's last frame long after it ended, Steam frames from an earlier
+session, and new frames only "sometimes".
+
+Experimental8 adds gamescope patch 0125. With `BL_VENUS=1` on aarch64 it cleans each CPU-written
+range to the point of coherency (`dc civac`, `dsb sy`; Linux allows this from EL0) after the shm
+staging copy, the per-frame constants, LUT uploads and texture uploads. `session.log` shows
+`Venus: cleaning CPU writes to mapped memory to the point of coherency` once. The frame probe
+stays in: a fixed build shows the sign-in screen (low black share) on every probe, and the startup
+movie plays and then gives way to it. **Not yet verified on the phone.** The same missing cache
+maintenance would affect any other CPU-written host-visible memory under Venus (games' uniform
+buffers, for example). If 0125 confirms the cause, the general fix belongs in the vtest/Venus
+layer.
