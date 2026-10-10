@@ -689,7 +689,8 @@ BUSCONF
       echo "== steam: renderer flags from BL_STEAM_CEF_ARGS: ${_bl_cef[*]}"
     fi
     # Venus (the Pixel/PowerVR port) frame probe: Steam's window read straight from Xwayland, ten
-    # times a second for 90 s once it is mapped, as "== xprobe" lines here. If these frames
+    # times a second for 90 s once it is mapped, plus every visible window's name, geometry and
+    # content hash once a second for the first 60 s, as "== xprobe" lines here. If these frames
     # already alternate (the compositor's probe saw gamescope's output alternate between old and
     # new pictures), the fault is in how Steam's renderer presents to X; if they are steady, it is
     # between Xwayland and gamescope's output. BL_XPROBE=0 turns it off.
@@ -728,6 +729,7 @@ class Image(Structure):
 x.XGetImage.restype = POINTER(Image)
 x.XGetImage.argtypes = [c_void_p, c_ulong, c_int, c_int, c_uint, c_uint, c_ulong, c_int]
 DESTROY = CFUNCTYPE(c_int, POINTER(Image))
+x.XFetchName.argtypes = [c_void_p, c_ulong, POINTER(c_char_p)]
 
 dpy = x.XOpenDisplay(None)
 if not dpy:
@@ -742,6 +744,35 @@ def windows(w):
     out = [kids[i] for i in range(n.value)]
     if kids:
         x.XFree(kids)
+    return out
+
+def grab(win, w, h):
+    img = x.XGetImage(dpy, win, 0, 0, w, h, ~0 & 0xffffffffffffffff, 2)
+    if not img:
+        return None
+    im = img.contents
+    data = ctypes.string_at(im.data, im.bytes_per_line * im.height)
+    DESTROY(im.destroy_image)(img)
+    return data
+
+def name(win):
+    p = c_char_p()
+    if x.XFetchName(dpy, win, byref(p)) and p.value is not None:
+        n = p.value.decode("utf-8", "replace")
+        x.XFree(p)
+        return n[:24]
+    return ""
+
+def survey():
+    out, stack = [], [root]
+    while stack:
+        w = stack.pop()
+        for k in windows(w):
+            a = Attrs()
+            if x.XGetWindowAttributes(dpy, k, byref(a)) and a.map_state == 2:
+                if a.width >= 300 and a.height >= 200:
+                    out.append((k, a.width, a.height, a.x, a.y))
+                stack.append(k)
     return out
 
 def biggest():
@@ -779,6 +810,18 @@ while time.time() - start < 90:
         if found and found[0] != target[0]:
             target = found
             say("biggest window is now 0x%x (%dx%d)" % target)
+        # Every visible window once a second for the first 60 s: which one holds which picture.
+        if row_t < 60:
+            parts = []
+            for k, ww, hh, xx, yy in survey():
+                d = grab(k, ww, hh)
+                if d is None:
+                    parts.append("0x%x %dx%d+%d+%d '%s' unreadable" % (k, ww, hh, xx, yy, name(k)))
+                else:
+                    g = d[1::16]
+                    parts.append("0x%x %dx%d+%d+%d '%s' %08x mean %d" % (k, ww, hh, xx, yy, name(k),
+                                 zlib.crc32(d[::28]) & 0xffffffff, sum(g) // max(1, len(g))))
+            say("t=%2ds windows: %s" % (row_t, "; ".join(parts) if parts else "none"))
     win, w, h = target
     img = x.XGetImage(dpy, win, 0, 0, w, h, ~0 & 0xffffffffffffffff, 2)
     if not img:

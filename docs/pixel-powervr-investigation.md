@@ -365,3 +365,22 @@ they are steady while the screen flickers, it is between Xwayland and gamescope'
 Experimental9 also adds `BL_STEAM_CEF_ARGS` (one line in `Download/droiddeck-env`), which replaces
 Steam's renderer flags (`-cef-force-gpu -cef-ozone-platform=x11 -cef-use-gl=angle
 -cef-use-angle=vulkan` by default), so renderer experiments need no build. Patch 0125 stays in.
+
+## Experimental9 X-probe result and experimental10 — 2026-10-10
+
+Session `2026-10-10-13-steam` (`0.3.1-pixel-experimental9`). Steam's Big Picture output window is
+`0x2200034` (`CCompositorGLThread::CreateOutputWindow`, an OpenGL window composited by Steam on
+llvmpipe). Read from Xwayland, from 12 s until the probe ended at 76 s, every sample is a new
+frame, all dark (mean 8–9, the startup-movie logo). **The sign-in screen never appears in that
+window**, through the user's input from about 15:45:28. Steam keeps compositing the movie layer
+into its output window, and the UI's sign-in page never takes over. The sign-in frames that do
+reach the screen therefore come from another X window, i.e. gamescope alternates between two
+windows' contents.
+
+Other evidence: `AcquirePixmap: failed to create glx pixmap for window: 0x2400016` (Composite
+`BadMatch`, GLX `BadDrawable`) occurs ten times, only for the 1x1 notification popup at its
+creation. It is not the main UI.
+
+Experimental10 extends the X probe: once a second for the first 60 s it lists every visible window
+(at least 300x200) with its id, geometry, `WM_NAME`, content hash and brightness. That shows which
+window holds the sign-in picture, and the next step is why gamescope shows both.
