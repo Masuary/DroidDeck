@@ -152,7 +152,12 @@ the driver does not advertise the required modifier feature.
 
 Experimental3 tests gamescope patch `0123-venus-copy-optimal-output-to-linear`:
 when `BL_VENUS=1` on the nested modifier backend, compose into a private optimal
-image, then copy the full frame into the selected LINEAR shared output image.
+RGBA image, then copy the full frame into the selected LINEAR shared output image.
+For BGRA output, use a nearest-filter blit to convert channel order. PowerVR also
+omits storage support for optimal BGRA8 (while accepting image creation), so
+keeping BGRA for the private target would still use an unsupported combination.
+The native RGBA-to-BGRA sharing test passes all 921,600 pixels on six frames;
+RGBA optimal storage support is advertised, and its mutable raw/sRGB views work.
 The shared outputs have transfer-destination usage instead of storage usage.
 The copy stays in the composition submission; existing barriers release it to
 FOREIGN in GENERAL and Wayland waits for completion before committing it. The
@@ -160,7 +165,7 @@ private target is recreated with output size/format changes. Other backends and
 explicit output overrides retain their existing path.
 
 The next installed test must show `0.3.1-pixel-experimental3` in `device.txt` and
-`Venus output: optimal compute -> LINEAR transfer copy` in `session.log`.
+`Venus output: optimal RGBA compute -> LINEAR transfer` in `session.log`.
 Then check animation, the clock, and input for stale frames or black rectangles.
 This candidate is **not yet verified to solve the flicker**, and accelerated
 Steam UI/game support remains unfinished.
@@ -173,4 +178,5 @@ clang -std=c11 -Wall -Wextra -Werror -I../vulkan-headers/include \
   -o .local-tests/vkprobe-sharing-compute -L/system/lib64 -lvulkan
 timeout 25 .local-tests/vkprobe-sharing-compute --compute
 timeout 25 .local-tests/vkprobe-sharing-compute --copy
+timeout 25 .local-tests/vkprobe-sharing-compute --copy --bgra-output
 ```

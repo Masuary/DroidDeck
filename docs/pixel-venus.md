@@ -3,7 +3,7 @@
 **Masuary fork, experimental3 candidate (2026-10-10):** the installed
 experimental2 still shows stale Steam frames and black regions despite its
 compositor ownership corrections. Experimental3 tests composing into a private
-optimal image and copying each completed frame to the LINEAR shared output,
+optimal RGBA image and copying/converting each completed frame to the LINEAR shared output,
 avoiding storage writes to shared images. Its effect still needs an installed
 app test. See [the phone investigation](pixel-powervr-investigation.md) for this
 fork's build, screenshot and native probe results.

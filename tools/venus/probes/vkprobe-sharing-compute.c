@@ -1,6 +1,7 @@
 // Full-size shared-image diagnostic. Uses two native Vulkan instances (one process).
 // --compute writes directly into the shared LINEAR image; --copy composes in an
 // OPTIMAL image and copies into a transfer-only shared output. Both use GPU fences.
+// --copy --bgra-output also tests conversion to the actual BGRA display format.
 // Direct LINEAR storage is diagnostic only: PowerVR omits STORAGE_IMAGE in its
 // modifier features even though creation succeeds. A pass is not conformance proof.
 // --legacy models the compositor's UNDEFINED acquire and missing source release; its reads
@@ -114,13 +115,15 @@ static void finish(Context *c) {
 }
 
 int main(int argc, char **argv) {
-    int legacy = 0, compute = 0, staging = 0;
+    int legacy = 0, compute = 0, staging = 0, bgra_output = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--legacy")) legacy = 1;
         else if (!strcmp(argv[i], "--compute")) compute = 1;
         else if (!strcmp(argv[i], "--copy")) compute = staging = 1;
-        else { fprintf(stderr, "usage: %s [--legacy] [--compute|--copy]\n", argv[0]); return 2; }
+        else if (!strcmp(argv[i], "--bgra-output")) bgra_output = 1;
+        else { fprintf(stderr, "usage: %s [--legacy] [--compute|--copy] [--bgra-output]\n", argv[0]); return 2; }
     }
+    if (bgra_output && !staging) { fputs("--bgra-output requires --copy\n", stderr); return 2; }
     Context producer = context(1), consumer = context(!legacy);
     printf("mode: %s\n", legacy ? "legacy (undefined contents, diagnostic only)" : "preserve and release");
     uint64_t linear = 0;
@@ -130,7 +133,7 @@ int main(int argc, char **argv) {
     VkExternalMemoryImageCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
         .pNext = &mods, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
     VkImageCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = &external,
-        .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1},
+        .imageType = VK_IMAGE_TYPE_2D, .format = bgra_output ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1},
         .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
         .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -189,6 +192,7 @@ int main(int argc, char **argv) {
     if (staging) {
         ici.pNext = NULL;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.format = VK_FORMAT_R8G8B8A8_UNORM;
         ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         CHECK(vkCreateImage(producer.device, &ici, NULL, &target));
         vkGetImageMemoryRequirements(producer.device, target, &req);
@@ -247,6 +251,7 @@ int main(int argc, char **argv) {
     CHECK(vkBindBufferMemory(consumer.device, readback, read_mem, 0));
     unsigned char *pixels;
     CHECK(vkMapMemory(consumer.device, read_mem, 0, VK_WHOLE_SIZE, 0, (void **)&pixels));
+    if (bgra_output) puts("export conversion: RGBA optimal -> BGRA LINEAR blit");
     int failures = 0;
     for (int frame = 0; frame < 6; frame++) {
         begin(&producer);
@@ -271,7 +276,15 @@ int main(int argc, char **argv) {
                     VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
                 VkImageCopy copy = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {W, H, 1}};
-                vkCmdCopyImage(producer.cmd, target, VK_IMAGE_LAYOUT_GENERAL, source, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+                if (bgra_output) {
+                    VkImageBlit blit = {.srcSubresource = copy.srcSubresource,
+                        .srcOffsets = {{0, 0, 0}, {W, H, 1}}, .dstSubresource = copy.dstSubresource,
+                        .dstOffsets = {{0, 0, 0}, {W, H, 1}}};
+                    vkCmdBlitImage(producer.cmd, target, VK_IMAGE_LAYOUT_GENERAL, source,
+                        VK_IMAGE_LAYOUT_GENERAL, 1, &blit, VK_FILTER_NEAREST);
+                } else {
+                    vkCmdCopyImage(producer.cmd, target, VK_IMAGE_LAYOUT_GENERAL, source, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+                }
             } else {
                 VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                 vkCmdClearColorImage(producer.cmd, source, VK_IMAGE_LAYOUT_GENERAL, &color, 1, &range);
@@ -296,7 +309,7 @@ int main(int argc, char **argv) {
         vkCmdPipelineBarrier(consumer.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
             0, 0, NULL, 1, &host, 0, NULL);
         submit(&consumer);
-        unsigned char expected[4] = {0, 0, 0, 255}; expected[frame % 3] = 255;
+        unsigned char expected[4] = {0, 0, 0, 255}; expected[bgra_output ? 2 - frame % 3 : frame % 3] = 255;
         unsigned correct = 0;
         for (int pixel = 0; pixel < W * H; pixel++) correct += !memcmp(pixels + pixel * 4, expected, 4);
         printf("frame %d: %u/%d correct, first pixel %u,%u,%u,%u\n", frame + 1, correct, W * H,
