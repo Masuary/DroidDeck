@@ -97,3 +97,14 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   plus a host-read barrier), invalidated after the submission's wait, and sent to the compositor as
   one of three `wl_shm` XRGB8888 buffers with release tracking. The compositor copies a wl_shm frame
   at commit, so no cross-device GPU sharing is involved.
+- `0127-venus-check-readback-frame-marker.patch` - this fork, `BL_VENUS=1` with 0126's wl_shm output:
+  experimental12 still showed pictures well behind Steam's X windows (the startup logo for 16 s
+  after the sign-in screen was up), plus frames missing the dialog or torn at a horizontal line,
+  which a copy read part-way through would give. After each composite's readback copy the GPU
+  now writes the frame's number into a marker after the image (`CmdFillBuffer`, ordered after the
+  copy by a transfer barrier). Once the submission's wait returns, the host compares it with the
+  number it expects. If the wait came back before the GPU finished, gamescope polls the marker
+  for up to 100 ms and drops the cache lines it read too early before sending the frame. Every
+  5 s with a late frame (and for the first three windows regardless) it logs `Venus readback: N of
+  M frames read before the GPU finished them (worst K frames behind ...)`.
+  `BL_VENUS_READBACK_WAIT=0` only measures.

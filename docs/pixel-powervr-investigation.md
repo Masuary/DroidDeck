@@ -431,3 +431,41 @@ the compositor copies at commit. It costs a 3.7 MB readback and copy per frame a
 presenting 1280x720 frames as wl_shm`. If the screen is stable with it, the stale data lived in the
 cross-device dma-buf import. If it still flickers, the stale data is already in gamescope's own
 composite (its inputs), and the next probe belongs there.
+
+## Experimental12 result and experimental13 — 2026-10-10
+
+Session `2026-10-10-15-steam` (`0.3.1-pixel-experimental12`), with a 70 s screen recording
+(17:11:18–17:12:28; the X probe's t=0 is 17:11:22). `session.log` shows both `wl_shm` lines, and the
+compositor receives only wl_shm frames (13–15 per second), so no dma-buf crosses devices any more.
+**It still flickers.**
+
+| Clock | Steam's X windows (`== xprobe`) | Screen (recording) |
+| --- | --- | --- |
+| 17:11:35–42 | startup logo | black |
+| 17:11:43–18:00 | sign-in, a new frame every 0.1 s | the logo, one frozen picture for ~16 s |
+| 17:12:00–28 | sign-in | sign-in, cycling every ~0.1 s between complete, blurred background without the dialog, and torn (the dialog down to a horizontal line, blur below) |
+
+Steam's clock reads 5:11 in every frame: no pictures from earlier sessions any more. The stale
+pictures are now already in gamescope's readback, upstream of the compositor. 0126 cleans the CPU
+cache lines before reading the readback, so the CPU cache is not where they come from.
+
+A torn frame with a clean horizontal edge is what a buffer copy read part-way through gives, and
+a screen that runs seconds behind is what a CPU that does not wait for the GPU gives. Both would
+follow if, under Venus over vtest, `vkWaitSemaphores` on gamescope's timeline returns before the
+GPU has finished the submission. That would also make gamescope reuse its upload buffer (Steam's
+window contents) while the GPU still copies from it, and could explain experimental10's "stale"
+shared buffers as well. **This is a hypothesis.**
+
+Experimental13 adds gamescope patch 0127 to test it: the GPU writes each frame's number into a
+marker after the readback copy, and the host checks it after the wait. `session.log` shows
+`Venus output: each read-back frame is checked against a GPU-written frame marker` once, then
+`Venus readback: N of M frames read before the GPU finished them (worst K frames behind, ...)`:
+
+- N = 0 in every summary: the wait is sound, and the stale picture is already in the composite,
+  so the next probe goes at gamescope's inputs (its textures of Steam's windows).
+- N > 0: the wait returns early. 0127 then polls the marker (up to 100 ms) before sending the
+  frame, so the screen should follow Steam; `BL_VENUS_READBACK_WAIT=0` in `Download/droiddeck-env`
+  turns the wait off for an A/B comparison. The same early wait affects every other host read and
+  buffer reuse in gamescope, so the general fix then belongs in the Venus/vtest fence path.
+
+**Not yet verified on the phone.**
