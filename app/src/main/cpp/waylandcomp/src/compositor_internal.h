@@ -49,12 +49,6 @@ struct dmabuf_buffer {
      * until the surface commits something newer, so the picture never blinks to black. */
     int refs;
     void *ahb_state;                        /* zero-copy: ahb_swapchain.c's record (the game's AHardwareBuffer) */
-    /* CPU import (non-Adreno GPUs, the Pixel/PowerVR Venus port): the dma-buf mapped here and copied
-     * into img (then a host-memory image, not an import) at every commit; probe_img is a GPU import
-     * of the same buffer, kept only so the frame probe can compare the two views. */
-    void *cpu_map;
-    size_t cpu_size;
-    struct vkp_image *probe_img;
 };
 
 /* Which program each Wayland client is (from /proc/<pid>/cmdline), for the session log. */

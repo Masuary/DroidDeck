@@ -89,3 +89,11 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   constants, LUTs and texture uploads) is now cleaned to the point of coherency (`dc civac` per
   line, `dsb sy`). Without it the GPU copied stale pages: older frames, the startup movie's last
   frame, and left-overs from earlier sessions, i.e. the Pixel flicker.
+- `0126-venus-present-frames-as-wl-shm.patch` - this fork, `BL_VENUS=1` (opt out with
+  `BL_VENUS_SHM=0`): the host compositor's PowerVR import of gamescope's shared output dma-bufs
+  returned stale contents (each of the three buffers held an old picture for seconds, while
+  Steam's X windows were live), and Android refuses to let the compositor mmap them. Each composite
+  is now also copied, on gamescope's own device, into a host-visible buffer (`CmdCopyImageToBuffer`
+  plus a host-read barrier), invalidated after the submission's wait, and sent to the compositor as
+  one of three `wl_shm` XRGB8888 buffers with release tracking. The compositor copies a wl_shm frame
+  at commit, so no cross-device GPU sharing is involved.

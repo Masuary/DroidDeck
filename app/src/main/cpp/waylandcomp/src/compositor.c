@@ -34,8 +34,6 @@
 #include <sys/timerfd.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
-#include <sys/mman.h>
-#include <sys/ioctl.h>
 #include <android/log.h>
 #include <wayland-server.h>
 
@@ -590,8 +588,6 @@ static void constraints_focus_entered(struct wl_resource *target, struct wl_clie
 void dmabuf_buffer_unref(struct dmabuf_buffer *b) {
     if (!b || --b->refs > 0) return;
     vkp_image_destroy(b->img);
-    vkp_image_destroy(b->probe_img);
-    if (b->cpu_map) munmap(b->cpu_map, b->cpu_size);
     for (int i = 0; i < b->n_planes; i++)
         if (b->fd[i] >= 0) close(b->fd[i]);
     free(b);
@@ -762,67 +758,6 @@ extern void droiddeck_on_game_frame(void);
  * ("" when /proc gave none) - the app arms its CPU affinity on it (X11 does that from window events). */
 extern void droiddeck_on_game_program(int pid, const char *program);
 
-/* CPU import (non-Adreno GPUs: the Pixel/PowerVR Venus port). Read through this driver's own import
- * of gamescope's output dma-buf, each of its three buffers kept returning an old picture - the logo,
- * an earlier sign-in frame, the black first frame - for seconds at a time, while the same frames
- * read from Xwayland were live (experimental10). So the client's buffer is not imported for the
- * GPU here: it is mapped, synced for CPU reads with DMA_BUF_IOCTL_SYNC (the exporter's cache
- * maintenance), and copied into a host-memory image at every commit, the way wl_shm frames are. */
-struct droiddeck_dma_buf_sync { uint64_t flags; };
-#define DROIDDECK_DMA_BUF_SYNC_READ 1ull
-#define DROIDDECK_DMA_BUF_SYNC_START 0ull
-#define DROIDDECK_DMA_BUF_SYNC_END 4ull
-#define DROIDDECK_DMA_BUF_IOCTL_SYNC _IOW('b', 0, struct droiddeck_dma_buf_sync)
-
-static int cpu_import_wanted(void) {
-    static int wanted = -1;
-    if (wanted < 0) {
-        if (vkp_ready() != 0) return 0; /* 0 = the device is up */
-        const char *gpu = vkp_gpu_name();
-        if (!gpu || !*gpu) return 0; /* not known yet: ask again on the next commit */
-        wanted = !strstr(gpu, "Adreno");
-        if (wanted)
-            droiddeck_log("dmabuf", "CPU import on (%s): client dma-bufs are mapped, synced and copied at each commit instead of imported for the GPU", gpu);
-    }
-    return wanted;
-}
-
-static int dmabuf_sync(int fd, uint64_t flags) {
-    struct droiddeck_dma_buf_sync sync = {.flags = flags};
-    int r;
-    do { r = ioctl(fd, DROIDDECK_DMA_BUF_IOCTL_SYNC, &sync); } while (r < 0 && (errno == EINTR || errno == EAGAIN));
-    return r;
-}
-
-/* 0 = b->img holds this commit's pixels; -1 = this buffer cannot take the CPU path (the caller imports it). */
-static int cpu_import_commit(struct dmabuf_buffer *b) {
-    if (b->img && vkp_image_is_dmabuf(b->img)) return -1; /* already imported for the GPU */
-    if (b->n_planes != 1 || b->modifier != MOD_LINEAR || b->width <= 0 || b->height <= 0 ||
-        (b->format != DRM_XRGB8888 && b->format != DRM_ARGB8888) || b->stride[0] < (uint32_t)b->width * 4)
-        return -1;
-    if (!b->cpu_map) {
-        size_t size = (size_t)b->offset[0] + (size_t)b->stride[0] * (size_t)b->height;
-        void *map = mmap(NULL, size, PROT_READ, MAP_SHARED, b->fd[0], 0);
-        if (map == MAP_FAILED) {
-            static int said;
-            if (!said) { said = 1; droiddeck_log("dmabuf", "CPU import: mmap of a %dx%d dma-buf failed (%s); importing it for the GPU", b->width, b->height, strerror(errno)); }
-            return -1;
-        }
-        b->cpu_map = map;
-        b->cpu_size = size;
-    }
-    if (!b->img) b->img = vkp_image_create_shm(b->width, b->height);
-    if (!b->img) return -1;
-    static int sync_said;
-    if (dmabuf_sync(b->fd[0], DROIDDECK_DMA_BUF_SYNC_START | DROIDDECK_DMA_BUF_SYNC_READ) != 0 && !sync_said) {
-        sync_said = 1;
-        droiddeck_log("dmabuf", "CPU import: DMA_BUF_IOCTL_SYNC refused (%s); copying without it", strerror(errno));
-    }
-    vkp_image_upload_shm(b->img, (const uint8_t *)b->cpu_map + b->offset[0], (int)b->stride[0]);
-    dmabuf_sync(b->fd[0], DROIDDECK_DMA_BUF_SYNC_END | DROIDDECK_DMA_BUF_SYNC_READ);
-    return 0;
-}
-
 /* Frame probe (non-Adreno GPUs, i.e. the Pixel/PowerVR Venus port): once a second, read back the
  * dma-buf a client just committed and log a fingerprint of what this compositor actually receives -
  * which buffer (its dma-buf inode), a content hash, how much of it is black, and whether that buffer
@@ -853,28 +788,7 @@ static void probe_committed_frame(struct dmabuf_buffer *b) {
     last_ns = t;
     struct stat st;
     const ino_t ino = fstat(b->fd[0], &st) == 0 ? st.st_ino : 0;
-    /* With the CPU import, b->img is the CPU copy; the GPU's view of the same buffer is a separate
-     * import, made only for this comparison. */
-    char gpu_view[48] = "";
-    if (b->cpu_map) {
-        if (!b->probe_img)
-            b->probe_img = vkp_image_from_dmabuf(b->fd[0], b->format, b->modifier, b->width, b->height,
-                                                 b->stride[0], b->offset[0]);
-        if (b->probe_img && vkp_image_readback(b->probe_img, px, PROBE_MAX_PX) == 0) {
-            uint32_t gh = 2166136261u;
-            for (size_t i = 0; i < (size_t)b->width * b->height; i += 7) gh = (gh ^ (px[i] & 0x00ffffffu)) * 16777619u;
-            snprintf(gpu_view, sizeof(gpu_view), ", GPU import %08x", gh);
-        } else {
-            snprintf(gpu_view, sizeof(gpu_view), ", GPU import unreadable");
-        }
-    }
-    if (b->cpu_map) {
-        /* The CPU copy is what b->img was just filled from; hash it there (a GPU readback of b->img
-         * would start from UNDEFINED and may discard it before it is drawn). */
-        const uint8_t *src = (const uint8_t *)b->cpu_map + b->offset[0];
-        for (int y = 0; y < b->height; y++)
-            memcpy(px + (size_t)y * b->width, src + (size_t)y * b->stride[0], (size_t)b->width * 4);
-    } else if (vkp_image_readback(b->img, px, PROBE_MAX_PX) != 0) {
+    if (vkp_image_readback(b->img, px, PROBE_MAX_PX) != 0) {
         droiddeck_log("probe", "dma-buf %lu: readback failed", (unsigned long)ino);
         lines++;
         return;
@@ -904,9 +818,8 @@ static void probe_committed_frame(struct dmabuf_buffer *b) {
     slot[k].hash = hash;
     slot[k].at_ns = t;
     slot[k].seen++;
-    droiddeck_log("probe", "dma-buf %lu (%dx%d, seen %u): %s %08x, %d%% black, %s%s", (unsigned long)ino,
-                  b->width, b->height, slot[k].seen, b->cpu_map ? "CPU copy" : "hash", hash,
-                  sampled ? (int)(black * 100 / sampled) : 0, was, gpu_view);
+    droiddeck_log("probe", "dma-buf %lu (%dx%d, seen %u): hash %08x, %d%% black, %s", (unsigned long)ino,
+                  b->width, b->height, slot[k].seen, hash, sampled ? (int)(black * 100 / sampled) : 0, was);
     if (++lines == PROBE_MAX_LINES) droiddeck_log("probe", "frame probe: %d lines written, stopping", lines);
 }
 
@@ -919,8 +832,7 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
         s->dmabuf_destroy.notify = on_dmabuf_destroyed;
         wl_resource_add_destroy_listener(buffer, &s->dmabuf_destroy);
     }
-    const int cpu_copied = !b->import_failed && cpu_import_wanted() && cpu_import_commit(b) == 0;
-    if (!cpu_copied && !b->img && !b->import_failed && b->n_planes >= 1) {
+    if (!b->img && !b->import_failed && b->n_planes >= 1) {
         b->img = vkp_image_from_dmabuf(b->fd[0], b->format, b->modifier, b->width, b->height,
                                        b->stride[0], b->offset[0]);
         if (b->img && g_zero_copy) sc_layer_probe_dmabuf_fd(b->fd[0]);

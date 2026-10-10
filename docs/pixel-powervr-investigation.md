@@ -414,3 +414,20 @@ are. `wayland.log` says `CPU import on`. The frame probe now prints both views o
 CPU copy follows the screen and the GPU import lags, the fault is in the GPU import path. If both
 lag, the producer's writes are not reaching memory. This costs one 3.7 MB copy per frame at
 about 15 fps.
+
+## Experimental11 result and experimental12 — 2026-10-10
+
+Session `2026-10-10-17-steam` (`0.3.1-pixel-experimental11`): still flickers. The CPU import never
+ran: `CPU import: mmap of a 1280x720 dma-buf failed (Permission denied); importing it for the GPU`.
+Android does not let the app map gamescope's output dma-bufs, so the compositor fell back to its
+GPU import, and the probe again shows each of the three buffers frozen on an old picture.
+Experimental12 reverts that compositor change.
+
+Experimental12 instead stops sharing GPU memory between the two devices. Gamescope patch 0126
+(Venus, default on, `BL_VENUS_SHM=0` to disable) copies every composite into a host-visible
+buffer on gamescope's own (Venus) device and sends it to the compositor as a `wl_shm` frame, which
+the compositor copies at commit. It costs a 3.7 MB readback and copy per frame at 1280x720.
+`session.log` shows `Venus output: frames go to the host compositor as wl_shm` and `Venus:
+presenting 1280x720 frames as wl_shm`. If the screen is stable with it, the stale data lived in the
+cross-device dma-buf import. If it still flickers, the stale data is already in gamescope's own
+composite (its inputs), and the next probe belongs there.
