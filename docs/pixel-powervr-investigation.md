@@ -283,3 +283,23 @@ Experimental6 starts Steam with `-cef-disable-gpu -cef-disable-gpu-compositing` 
 restores the ANGLE/Vulkan path for an A/B comparison. Expect a slower UI; check whether the
 logo/sign-in alternation is gone. The frame probe stays in for this test. **Not yet verified on
 the phone.**
+
+## Experimental6 installed test and experimental7 candidate — 2026-10-10
+
+Session `2026-10-10-07-steam` (`0.3.1-pixel-experimental6`, Steam's UI on the CPU):
+
+- **The flicker is gone.** After the movie (hash `f949d637`, logo on black), every probe of
+  every gamescope buffer is that same frame, `UNCHANGED` for over 30 s.
+- The screen stays on the logo, though. Steam's UI is alive underneath: `webhelper_js.txt` logs
+  the sign-in state (`OnLoginStateChange 1 1 0 0`), `giving focus to keyboard` on the user's
+  presses at 14:42:20–27, and a sign-in poll at 14:42:44. Only the startup movie's last frame
+  reaches the window.
+
+The startup movie's layer is therefore what never leaves the Big Picture window under Venus. On
+the GPU path its last frame alternated with the UI; on the CPU it covers the UI. Experimental7
+keeps the CPU UI and sets DroidDeck's startup movie aside for Venus sessions: the session script
+renames `uioverrides/movies/{bigpicture,steam_os}_startup.webm` before Steam starts, and the app
+stages them again at the next launch. `BL_VENUS_STARTUP_MOVIE=1` keeps the movie. Look for
+`experimental Venus: startup movie off` in `session.log`, then for a sign-in screen that stays up.
+If Steam falls back to a built-in movie and gets stuck the same way, the problem is video playback
+in steamwebhelper itself. **Not yet verified on the phone.**

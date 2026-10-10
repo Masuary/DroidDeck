@@ -691,6 +691,19 @@ BUSCONF
       _bl_cef=(-cef-disable-gpu -cef-disable-gpu-compositing -cef-ozone-platform=x11)
       echo "== experimental Venus: Steam's UI drawn on the CPU (BL_VENUS_CEF_GPU=1 for ANGLE/Vulkan)"
     fi
+    # Under Venus the startup movie's layer never leaves Steam's Big Picture window: on the GPU
+    # path its last frame alternated with the sign-in screen, drawn on the CPU it stays on top of a
+    # live, focused sign-in page (experimental6). Steam plays the movie only when its override file
+    # is there, so set DroidDeck's movie aside for this session; the app stages it again at the next
+    # launch. BL_VENUS_STARTUP_MOVIE=1 keeps it.
+    if [ "${BL_VENUS:-0}" = 1 ] && [ "${BL_VENUS_STARTUP_MOVIE:-0}" != 1 ]; then
+      _bl_movies=$steam_root/config/uioverrides/movies
+      _bl_moved=
+      for _bl_m in bigpicture_startup.webm steam_os_startup.webm; do
+        [ -f "$_bl_movies/$_bl_m" ] && mv -f "$_bl_movies/$_bl_m" "$_bl_movies/$_bl_m.venus-off" && _bl_moved="$_bl_moved $_bl_m"
+      done
+      echo "== experimental Venus: startup movie off for this session (${_bl_moved# }; BL_VENUS_STARTUP_MOVIE=1 keeps it)"
+    fi
     _bl_ui=(-gamepadui)
     [ "${BL_STEAM_UI:-}" = desktop ] && _bl_ui=()
     # Deck mode (BL_STEAMDECK=1, the Steam page's Client settings): -steamdeck is the flag that puts

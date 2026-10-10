@@ -17,6 +17,8 @@ come from the screen swapchain.
 The probe found them in gamescope's own input: Steam's window alternates between the startup
 movie's last frame (DroidDeck's logo) and the sign-in screen. Experimental6 draws Steam's UI on
 the CPU in Venus sessions (`-cef-disable-gpu`) instead of ANGLE on Vulkan over Venus.
+That stopped the flicker, but the movie's last frame then stayed over a live sign-in page;
+experimental7 also skips DroidDeck's startup movie in Venus sessions.
 
 Status: **work in progress, not playable.** Steam's Big Picture sign-in screen renders on the Pixel
 (gamescope on Venus/PowerVR, Steam UI GL on llvmpipe), but the display shows frozen snapshots of
