@@ -117,3 +117,11 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   set wait, `completedSeqNo()` and `garbageCollect()` count a submission done only once it and every
   earlier one have written theirs (polling up to 1 s). Every 5 s with a late wait (and for the first
   three windows regardless) it logs `Venus: N of M waits returned before the GPU finished`.
+- `0129-venus-read-back-private-composite.patch` - this fork, `BL_VENUS=1` with 0126's wl_shm output:
+  with every wait confirmed (0128) and 0 late readbacks, the screen still cycled through three
+  fixed pictures in a strict 1-2-3 order, one per frame: gamescope's three LINEAR shared output
+  images each kept an old picture (taken at different moments) when read back on gamescope's own
+  Venus device. The readback now copies the private optimal composite image (0123) instead, which
+  is written every frame and never exported, and the CPU swaps red and blue while filling the
+  XRGB8888 wl_shm buffer. `session.log` says `Venus readback: from the private composite image`.
+  `BL_VENUS_READBACK_FROM_SHARED=1` reads the shared image again, for an A/B comparison.

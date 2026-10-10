@@ -498,3 +498,28 @@ before the GPU finished` (how often the timeline lied), and 0127's `Venus readba
 should now report 0 late frames. Then check the recording for the old pictures. If they are gone, the
 real fix belongs in Venus/vtest's timeline-semaphore handling. If they remain with 0 late readbacks,
 the next probe is gamescope's per-window textures. **Not yet verified on the phone.**
+
+## Experimental14 result and experimental15 — 2026-10-10
+
+Session `2026-10-10-17-steam` (`0.3.1-pixel-experimental14`), installed and captured over wireless
+adb (`adb install -r`, `screenrecord`).
+
+- **0128 works.** In every 5 s window about half of gamescope's waits (45–55%) returned before the
+  GPU had finished; each was held 0.5–11 ms until it had, with no timeouts. 0127 now reports 0 late
+  readbacks.
+- **It still flickers**, as a strict three-picture rotation, one per frame, for the whole 15 s
+  recording: the sign-in dialog (Steam clock 6:49), the side menu without the dialog (6:49), and the
+  side menu without the dialog (6:50). Three moments, always in the same order.
+
+The only thing in gamescope's output path that comes in threes and changes every frame is its
+three LINEAR shared output images (the wl_shm buffers do not rotate: the compositor releases each
+at commit). Each of them keeps an old picture: gamescope's copy of the new frame into it does not
+stick, or reading it back returns old contents, on gamescope's own Venus device. This also
+re-explains experimental10: the stale pictures were never the compositor's dma-buf import; the
+images themselves hold them.
+
+Experimental15 adds gamescope patch 0129: the readback copies gamescope's private optimal
+composite image instead (written every frame, never exported), with red and blue swapped on the CPU
+for the XRGB8888 wl_shm frame. `BL_VENUS_READBACK_FROM_SHARED=1` restores the old source for an A/B
+comparison. If the rotation stops, the fault is in LINEAR exportable images under Venus on PowerVR,
+which is what to reproduce and report upstream. **Not yet verified on the phone.**

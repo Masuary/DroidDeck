@@ -1,0 +1,101 @@
+diff --git a/src/Backends/WaylandBackend.cpp b/src/Backends/WaylandBackend.cpp
+index ca3b83d..93bf72e 100644
+--- a/src/Backends/WaylandBackend.cpp
++++ b/src/Backends/WaylandBackend.cpp
+@@ -1344,7 +1344,8 @@ namespace gamescope
+                 compositeLayer.colorspace = pFrameInfo->outputEncodingEOTF == EOTF_PQ ? GAMESCOPE_APP_TEXTURE_COLORSPACE_HDR10_PQ : GAMESCOPE_APP_TEXTURE_COLORSPACE_SRGB;
+ 
+                 uint32_t uShmWidth = 0, uShmHeight = 0;
+-                const void *pShmFrame = VenusSession() ? vulkan_venus_readback( &uShmWidth, &uShmHeight ) : nullptr;
++                bool bShmSwapRB = false;
++                const void *pShmFrame = VenusSession() ? vulkan_venus_readback( &uShmWidth, &uShmHeight, &bShmSwapRB ) : nullptr;
+                 VenusShmBuffer *pShm = pShmFrame ? VenusShmAcquire( m_pBackend->GetShm(), m_pBackend->GetDisplay(), uShmWidth, uShmHeight ) : nullptr;
+                 if ( pShm )
+                 {
+@@ -1354,7 +1355,20 @@ namespace gamescope
+                         s_bSaid = true;
+                         xdg_log.infof( "Venus: presenting %ux%u frames as wl_shm", uShmWidth, uShmHeight );
+                     }
+-                    memcpy( pShm->pData, pShmFrame, size_t( uShmWidth ) * uShmHeight * 4 );
++                    const size_t uPixels = size_t( uShmWidth ) * uShmHeight;
++                    if ( bShmSwapRB )
++                    {
++                        // RGBA composite -> XRGB8888 (BGRA in memory).
++                        const uint32_t *pSrc = static_cast<const uint32_t *>( pShmFrame );
++                        uint32_t *pDst = static_cast<uint32_t *>( pShm->pData );
++                        for ( size_t i = 0; i < uPixels; i++ )
++                        {
++                            const uint32_t v = pSrc[ i ];
++                            pDst[ i ] = ( v & 0xff00ff00u ) | ( ( v & 0xffu ) << 16 ) | ( ( v >> 16 ) & 0xffu );
++                        }
++                    }
++                    else
++                        memcpy( pShm->pData, pShmFrame, uPixels * 4 );
+                     pShm->bBusy = true;
+                     m_Planes[0].Present(
+                         ClipPlane( WaylandPlaneState
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+index 841b236..b6a2770 100644
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -4970,7 +4970,19 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
+ 			cmdBuffer->blitImage( compositeImage, sharedOutputImage );
+ 		if ( g_output.venusReadbackBuffer && sharedOutputImage->width() * sharedOutputImage->height() * 4 <= g_output.venusReadbackSize )
+ 		{
+-			cmdBuffer->copyImageToBuffer( sharedOutputImage, g_output.venusReadbackBuffer );
++			// The three LINEAR shared images each kept an old picture under Venus (experimental14:
++			// the screen cycled through three fixed frames), so read the private composite back.
++			static const bool s_bFromShared = env_to_bool( getenv( "BL_VENUS_READBACK_FROM_SHARED" ) );
++			static bool s_bSaid = false;
++			gamescope::Rc<CVulkanTexture> readbackImage = s_bFromShared ? sharedOutputImage : compositeImage;
++			g_output.venusReadbackSwapRB = readbackImage->format() != sharedOutputImage->format();
++			if ( !s_bSaid )
++			{
++				s_bSaid = true;
++				vk_log.infof( "Venus readback: from the %s image%s", s_bFromShared ? "shared output" : "private composite",
++					g_output.venusReadbackSwapRB ? ", red and blue swapped on the CPU" : "" );
++			}
++			cmdBuffer->copyImageToBuffer( readbackImage, g_output.venusReadbackBuffer );
+ 			cmdBuffer->writeBufferMarker( g_output.venusReadbackBuffer, g_output.venusMarkerOffset, ++g_output.venusMarkerFrame );
+ 		}
+ 	}
+@@ -5093,7 +5105,7 @@ gamescope::Rc<CVulkanTexture> vulkan_get_next_output_image()
+ 	return g_output.outputImages[ g_output.nOutImage ];
+ }
+ 
+-const void *vulkan_venus_readback( uint32_t *pWidth, uint32_t *pHeight )
++const void *vulkan_venus_readback( uint32_t *pWidth, uint32_t *pHeight, bool *pSwapRB )
+ {
+ 	if ( !g_output.venusReadbackData || g_output.outputImages.empty() )
+ 		return nullptr;
+@@ -5169,6 +5181,7 @@ const void *vulkan_venus_readback( uint32_t *pWidth, uint32_t *pHeight )
+ 
+ 	*pWidth = uWidth;
+ 	*pHeight = uHeight;
++	*pSwapRB = g_output.venusReadbackSwapRB;
+ 	return g_output.venusReadbackData;
+ }
+ 
+diff --git a/src/rendervulkan.hpp b/src/rendervulkan.hpp
+index 76133e7..488cf57 100644
+--- a/src/rendervulkan.hpp
++++ b/src/rendervulkan.hpp
+@@ -474,7 +474,7 @@ gamescope::Rc<CVulkanTexture> vulkan_get_next_output_image();
+ void vulkan_venus_clean_cpu_writes( const void *pData, size_t uSize );
+ // Venus shm output: the last composited frame (BGRA8, rows of width*4 bytes) after the caller
+ // waited for that composite, made visible to the CPU. Null when this output does not read back.
+-const void *vulkan_venus_readback( uint32_t *pWidth, uint32_t *pHeight );
++const void *vulkan_venus_readback( uint32_t *pWidth, uint32_t *pHeight, bool *pSwapRB );
+ gamescope::Rc<CVulkanTexture> vulkan_acquire_screenshot_texture(uint32_t width, uint32_t height, bool exportable, uint32_t drmFormat, EStreamColorspace colorspace = k_EStreamColorspace_Unknown);
+ gamescope::Rc<CVulkanTexture> vulkan_acquire_capture_texture(uint32_t width, uint32_t height, bool exportable, uint32_t drmFormat, EStreamColorspace colorspace = k_EStreamColorspace_Unknown);
+ uint32_t vulkan_get_rgb10_capture_format( void );
+@@ -613,6 +613,9 @@ struct VulkanOutput_t
+ 	// so the host can tell whether the submission's wait returned before the GPU finished.
+ 	VkDeviceSize venusMarkerOffset = 0;
+ 	uint32_t venusMarkerFrame = 0;
++	// The readback comes from the private composite image (RGBA), whose red and blue the CPU swaps
++	// for the XRGB8888 wl_shm frame; BL_VENUS_READBACK_FROM_SHARED=1 reads the shared image instead.
++	bool venusReadbackSwapRB = false;
+ 
+ 	uint32_t uOutputFormat = DRM_FORMAT_INVALID;
+ 	uint32_t uOutputFormatOverlay = DRM_FORMAT_INVALID;
