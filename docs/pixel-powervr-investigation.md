@@ -252,3 +252,34 @@ another.
 A test needing no new build: the drawer's **Zero-copy presentation** switch moves the frame onto
 an Android display layer (an AHardwareBuffer the compositor fills and hands to SurfaceFlinger),
 bypassing the screen swapchain. If the flicker stops with it on, case 2 is confirmed.
+
+## Experimental5 probe result and experimental6 candidate — 2026-10-10
+
+Session `2026-10-10-05-steam` (`0.3.1-pixel-experimental5`, zero-copy off). The screen holds the
+DroidDeck logo on black while nothing changes, and flickers whenever input makes Steam redraw.
+The compositor's probe (app.log, `[probe]`) read back what gamescope committed:
+
+| Hash | Black | Content | Buffers (dma-buf inode) |
+| --- | --- | --- | --- |
+| `6c4a016d` | 100% | empty frame (startup) | 1217952, 1217963, 1217964, 1217965 |
+| `7eeed1b2`, `3d8958e9` | 95% | logo on black | 1217963, 1217965 |
+| `a0191819` | 0% | Steam sign-in | 1217963 |
+
+The same gamescope buffer (1217963) carries the sign-in screen at one probe and the logo at the
+next. The logo is not left-over memory: it is the last frame of DroidDeck's own Steam startup
+movie (`SessionFiles.kt` stages `steam-startup/droiddeck-startup.webm` as Steam's
+`bigpicture_startup.webm`). Gamescope composites what Steam's window gives it, so **the
+alternation is already in steamwebhelper's output**, before gamescope, Venus frame sharing or the
+compositor. Every earlier gamescope and compositor change was downstream of it.
+
+Steam is started with `-cef-force-gpu -cef-use-gl=angle -cef-use-angle=vulkan`. Under Venus,
+ANGLE's Vulkan is Venus with `MESA_VK_WSI_DEBUG=sw`; `LIBGL_ALWAYS_SOFTWARE` does not reach it.
+That path, Chromium's GPU compositor over Venus and the shared-memory WSI, is the remaining
+untested link. It presents frames that alternate between old and new content.
+
+Experimental6 starts Steam with `-cef-disable-gpu -cef-disable-gpu-compositing` when
+`BL_VENUS=1`, so Steam's UI is rasterised and composited on the CPU. `session.log` says
+`experimental Venus: Steam's UI drawn on the CPU`. `BL_VENUS_CEF_GPU=1` in `Download/droiddeck-env`
+restores the ANGLE/Vulkan path for an A/B comparison. Expect a slower UI; check whether the
+logo/sign-in alternation is gone. The frame probe stays in for this test. **Not yet verified on
+the phone.**

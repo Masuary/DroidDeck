@@ -14,6 +14,9 @@ Experimental4 still flickers, now showing pictures from before the session (the 
 an older Steam frame): left-over memory, not late frames. Experimental5 adds a compositor frame
 probe (`probe` lines in `wayland.log`) to tell whether the stale pictures arrive from gamescope or
 come from the screen swapchain.
+The probe found them in gamescope's own input: Steam's window alternates between the startup
+movie's last frame (DroidDeck's logo) and the sign-in screen. Experimental6 draws Steam's UI on
+the CPU in Venus sessions (`-cef-disable-gpu`) instead of ANGLE on Vulkan over Venus.
 
 Status: **work in progress, not playable.** Steam's Big Picture sign-in screen renders on the Pixel
 (gamescope on Venus/PowerVR, Steam UI GL on llvmpipe), but the display shows frozen snapshots of
