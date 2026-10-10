@@ -24,8 +24,15 @@ rm -rf pkg && mkdir pkg && cp -r tools/gamescope/patches pkg/ && chown -R builde
 sudo -u builder bash -c "
 set -euxo pipefail
 cd pkg
-for rel in 1 2 3 4; do
-  if git clone -q --depth 1 --branch ${VERSION}-\$rel https://gitlab.archlinux.org/archlinux/packaging/packages/gamescope.git arch 2>/dev/null; then break; fi
+# gitlab.archlinux.org refuses CI runners now and then (two of four builds on 2026-10-10):
+# retry the whole search with a growing pause, and show git's reason.
+for attempt in 1 2 3 4 5; do
+  for rel in 1 2 3 4; do
+    if git clone -q --depth 1 --branch ${VERSION}-\$rel https://gitlab.archlinux.org/archlinux/packaging/packages/gamescope.git arch 2>clone.err; then break 2; fi
+    rm -rf arch
+  done
+  echo \"Arch packaging not cloned (attempt \$attempt of 5): \$(tail -1 clone.err)\"
+  [ \$attempt = 5 ] || sleep \$((attempt * 30))
 done
 test -f arch/PKGBUILD
 cd arch
