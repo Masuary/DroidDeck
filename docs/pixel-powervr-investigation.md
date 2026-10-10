@@ -549,3 +549,25 @@ every commit; dma-bufs stay memoized; `BL_VENUS_SHM_MEMO=1` restores the old beh
 script also accepts a test gamescope at `files/linuxfs/root/.droiddeck-test/gamescope` (copied in with
 `adb shell run-as`), so gamescope-only experiments no longer need an APK build. **Not yet verified on
 the phone.**
+
+## Experimental16 result, A/B tests, and experimental17 — 2026-10-10
+
+Session `2026-10-10-19-steam` (`0.3.1-pixel-experimental16`, 40 s adb recording): **no flicker.**
+For the 27 s the app was on screen, every 0.1 s sample is a new picture and none returns to an
+earlier one; the screen follows taps. (It then fades to black because the app was left:
+`session.suspend_requested` with `activityVisible: false`.) 0130 is the fix.
+
+A/B tests with `Download/droiddeck-env` (each a fresh session, 40 s adb recording):
+
+| Session | Switched off | Result |
+| --- | --- | --- |
+| `2026-10-10-20-steam` | 0128 (`BL_VENUS_SEQ_MARKER=0`) | half-drawn frames: black blocks stepping in from the bottom-right, several per second at times. **0128 is needed.** (The white flashes in that recording are Android's screenshot animation.) |
+| `2026-10-10-21-steam` | 0129 (`BL_VENUS_READBACK_FROM_SHARED=1`) | clean: 3 natural repeats in 399 samples, transitions frame by frame. **0129 is not needed** once 0128 and 0130 are in. |
+
+Experimental17 is the cleaned-up set: 0127 (readback frame check, a diagnostic) and 0129 are
+dropped; 0128 now logs only its first three summaries and any window with a timeout; 0130 stays.
+The gamescope and wlroots builds retry Arch's packaging clone (it failed in two of four builds).
+
+Still open: Steam's blur pipeline variant fails to build on PowerVR (`vkCreateComputePipelines`
+`-13`, shader type 5), which affects the blurred menu background only; and the early timeline waits
+belong fixed in Venus/vtest itself, where 0128 is a workaround.

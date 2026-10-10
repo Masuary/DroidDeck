@@ -1,5 +1,5 @@
 diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
-index e763842..841b236 100644
+index 6feec05..85bed32 100644
 --- a/src/rendervulkan.cpp
 +++ b/src/rendervulkan.cpp
 @@ -1142,6 +1142,54 @@ bool CVulkanDevice::createScratchResources()
@@ -94,7 +94,7 @@ index e763842..841b236 100644
  	}
  
  	pCmdBuffer->AddDescriptorSet( uIndex );
-@@ -1472,13 +1543,69 @@ uint64_t CVulkanDevice::completedSeqNo()
+@@ -1472,13 +1543,70 @@ uint64_t CVulkanDevice::completedSeqNo()
  {
  	uint64_t ulSeqNo = 0;
  	vk_check( vk.GetSemaphoreCounterValue( device(), m_scratchTimelineSemaphore, &ulSeqNo ) );
@@ -145,7 +145,8 @@ index e763842..841b236 100644
 +		s_ulWindowStart = ulNow;
 +	if ( ulNow - s_ulWindowStart >= 5'000'000'000ull )
 +	{
-+		if ( s_uLate || s_uSummaries < 3 )
++		// The first three windows show how often the timeline is early; after that only trouble.
++		if ( s_uTimeouts || s_uSummaries < 3 )
 +		{
 +			s_uSummaries++;
 +			vk_log.infof( "Venus: %u of %u waits returned before the GPU finished (longest extra wait %.1f ms, %u timeouts after 1 s)",
@@ -165,7 +166,7 @@ index e763842..841b236 100644
  
  	// wait() only resets the ring on a latest-wait, which stale waits never are.
  	if ( currentSeqNo == m_submissionSeqNo )
-@@ -1624,6 +1751,7 @@ void CVulkanDevice::wait(uint64_t sequence, bool reset)
+@@ -1624,6 +1752,7 @@ void CVulkanDevice::wait(uint64_t sequence, bool reset)
  	} ;
  
  	vk_check( vk.WaitSemaphores( device(), &waitInfo, ~0ull ) );
@@ -174,10 +175,18 @@ index e763842..841b236 100644
  	if (reset)
  		resetCmdBuffers(sequence);
 diff --git a/src/rendervulkan.hpp b/src/rendervulkan.hpp
-index 65b99f2..76133e7 100644
+index abb5c78..ec4933c 100644
 --- a/src/rendervulkan.hpp
 +++ b/src/rendervulkan.hpp
-@@ -882,6 +882,11 @@ public:
+@@ -761,6 +761,7 @@ static inline uint32_t div_roundup(uint32_t x, uint32_t y)
+ 	VK_FUNC(CmdCopyBufferToImage) \
+ 	VK_FUNC(CmdCopyImage) \
+ 	VK_FUNC(CmdCopyImageToBuffer) \
++	VK_FUNC(CmdFillBuffer) \
+ 	VK_FUNC(CmdBlitImage) \
+ 	VK_FUNC(CmdDispatch) \
+ 	VK_FUNC(CmdDraw) \
+@@ -877,6 +878,11 @@ public:
  	inline VkCommandPool generalCommandPool() {return m_generalCommandPool;}
  	inline uint32_t queueFamily() {return m_queueFamily;}
  	uint64_t completedSeqNo();
@@ -189,7 +198,7 @@ index 65b99f2..76133e7 100644
  	inline uint32_t generalQueueFamily() {return m_generalQueueFamily;}
  	inline VkBuffer uploadBuffer() {return m_uploadBuffer;}
  	inline VkPipelineLayout pipelineLayout() {return m_pipelineLayout;}
-@@ -980,6 +985,11 @@ protected:
+@@ -975,6 +981,11 @@ protected:
  	uint32_t m_uploadBufferOffset = 0;
  
  	VkSemaphore m_scratchTimelineSemaphore;

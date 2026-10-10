@@ -97,34 +97,18 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   plus a host-read barrier), invalidated after the submission's wait, and sent to the compositor as
   one of three `wl_shm` XRGB8888 buffers with release tracking. The compositor copies a wl_shm frame
   at commit, so no cross-device GPU sharing is involved.
-- `0127-venus-check-readback-frame-marker.patch` - this fork, `BL_VENUS=1` with 0126's wl_shm output:
-  experimental12 still showed pictures well behind Steam's X windows (the startup logo for 16 s
-  after the sign-in screen was up), plus frames missing the dialog or torn at a horizontal line,
-  which a copy read part-way through would give. After each composite's readback copy the GPU
-  now writes the frame's number into a marker after the image (`CmdFillBuffer`, ordered after the
-  copy by a transfer barrier). Once the submission's wait returns, the host compares it with the
-  number it expects. If the wait came back before the GPU finished, gamescope polls the marker
-  for up to 100 ms and drops the cache lines it read too early before sending the frame. Every
-  5 s with a late frame (and for the first three windows regardless) it logs `Venus readback: N of
-  M frames read before the GPU finished them (worst K frames behind ...)`.
-  `BL_VENUS_READBACK_WAIT=0` only measures.
 - `0128-venus-confirm-waits-with-sequence-marker.patch` - this fork, `BL_VENUS=1` (opt out with
-  `BL_VENUS_SEQ_MARKER=0`): 0127 showed that waits on gamescope's timeline semaphore return before
-  the GPU has finished the submission under Venus over vtest (85-96% of frames). gamescope relies on
+  `BL_VENUS_SEQ_MARKER=0`): a frame marker (experimental13) showed that waits on gamescope's
+  timeline semaphore return before the GPU has finished the submission under Venus over vtest
+  (85-96% of frames). gamescope relies on
   those waits to reset command buffers, drop texture references and reuse its upload buffer, so
   every wait is now confirmed: each submission ends by writing its sequence number into its own
   slot of a 64-slot host-visible ring (after an all-commands barrier), and `wait()`, the descriptor
   set wait, `completedSeqNo()` and `garbageCollect()` count a submission done only once it and every
-  earlier one have written theirs (polling up to 1 s). Every 5 s with a late wait (and for the first
-  three windows regardless) it logs `Venus: N of M waits returned before the GPU finished`.
-- `0129-venus-read-back-private-composite.patch` - this fork, `BL_VENUS=1` with 0126's wl_shm output:
-  with every wait confirmed (0128) and 0 late readbacks, the screen still cycled through three
-  fixed pictures in a strict 1-2-3 order, one per frame: gamescope's three LINEAR shared output
-  images each kept an old picture (taken at different moments) when read back on gamescope's own
-  Venus device. The readback now copies the private optimal composite image (0123) instead, which
-  is written every frame and never exported, and the CPU swaps red and blue while filling the
-  XRGB8888 wl_shm buffer. `session.log` says `Venus readback: from the private composite image`.
-  `BL_VENUS_READBACK_FROM_SHARED=1` reads the shared image again, for an A/B comparison.
+  earlier one have written theirs (polling up to 1 s). It logs `Venus: N of M waits returned before
+  the GPU finished` for the first three 5 s windows, then only for a window with a timeout.
+  Without it half-drawn frames reach the screen (black blocks stepping in from the bottom-right;
+  A/B test, 2026-10-10).
 - `0130-venus-copy-shm-windows-at-every-commit.patch` - this fork, `BL_VENUS=1` (opt out with
   `BL_VENUS_SHM_MEMO=1`): the cause of the Pixel flicker. Xwayland has no glamor under Venus
   ("falling back to sw"), so it hands Steam's windows to gamescope as wl_shm buffers and reuses a
@@ -132,6 +116,8 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   destroyed - right for a dma-buf, whose texture shares its memory, but for wl_shm the texture is a
   copy taken at the first import. Every reuse of a buffer then showed the picture it held when
   first seen: the startup logo, black and old sign-in frames taking turns, a whole state behind
-  Steam. Under Venus a wl_shm buffer is now copied into a new texture at every commit (the commit's
-  reference keeps it alive while shown); dma-bufs stay memoized. Logged once: `Venus: wl_shm windows
-  are copied at every commit, not memoized`.
+  Steam. Under Venus a wl_shm buffer is now copied into a new texture at every commit (the
+  commit's reference keeps it alive while shown); dma-bufs stay memoized. 0127 (a readback frame
+  check) and 0129 (readback from the private composite) were diagnostics on the way here; an A/B
+  test with 0128 and 0130 in place showed 0129 is not needed, and both are dropped. Logged once:
+  `Venus: wl_shm windows are copied at every commit, not memoized`.

@@ -126,7 +126,7 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix '.pixel'
-            versionNameSuffix '-pixel-experimental16'
+            versionNameSuffix '-pixel-experimental17'
             minifyEnabled false
             signingConfig signingConfigs.testkey
         }
