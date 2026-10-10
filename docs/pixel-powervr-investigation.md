@@ -571,3 +571,12 @@ The gamescope and wlroots builds retry Arch's packaging clone (it failed in two 
 Still open: Steam's blur pipeline variant fails to build on PowerVR (`vkCreateComputePipelines`
 `-13`, shader type 5), which affects the blurred menu background only; and the early timeline waits
 belong fixed in Venus/vtest itself, where 0128 is a workaround.
+
+## Experimental17 long test — 2026-10-10
+
+Session `2026-10-10-22-steam` (`0.3.1-pixel-experimental17`, 180 s adb recording): **no flicker.**
+It covers the sign-in screen, signing in (including leaving the app for the Steam Mobile app
+confirmation and resuming), Steam's "Loading user data" screen and the account screens after it.
+Brightness is constant within almost every second, there are no black blocks, and no old picture
+comes back; the only repeating pictures are the loading spinner's rotation frames. 0128 logged its
+three opening summaries and no timeouts. The flicker is fixed by 0130, with 0128 required.
