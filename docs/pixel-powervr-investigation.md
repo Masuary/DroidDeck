@@ -384,3 +384,33 @@ creation. It is not the main UI.
 Experimental10 extends the X probe: once a second for the first 60 s it lists every visible window
 (at least 300x200) with its id, geometry, `WM_NAME`, content hash and brightness. That shows which
 window holds the sign-in picture, and the next step is why gamescope shows both.
+
+## Experimental10 result: Steam's windows are live, gamescope's shared buffers read stale — experimental11
+
+Session `2026-10-10-15-steam` (`0.3.1-pixel-experimental10`).
+
+**Xwayland** (`== xprobe`): from t=20 s Steam's three 1280x720 windows (`0x2200034`, `0x2400005`,
+`0x2400006`) show the sign-in screen (brightness 40–42) with a new hash on every 0.1 s sample. No
+dark or stale frame appears.
+
+**Compositor** (`[probe]`, gamescope's three output dma-bufs as the compositor's own GPU import
+reads them): each buffer holds one picture for many seconds and goes back to older ones. For
+example, buffer 1226766 shows the logo (`7eeed1b2`) for 11 s, then sign-in frames, then from
+16:01:41 to 16:02:04 the **all-black first frame** (`6c4a016d`), while 1226767 and 1226768 each
+hold a different fixed sign-in frame. Rotating through the three is the flicker.
+
+So gamescope composites live content (patch 0123 copies it into the LINEAR shared images), but
+the compositor's PowerVR import of those dma-bufs returns old contents. That is the original
+"frozen at first import" finding, now isolated: producer through Venus (the vtest server's
+PowerVR device), consumer the compositor's PowerVR device in the app process, on the same
+dma-buf. The exact layer that holds the stale data (GPU caches on either side, or the import) is
+still open.
+
+Experimental11 changes the compositor on GPUs other than Adreno: client dma-bufs are not imported
+for the GPU. Each is `mmap`ed, synced for CPU reads with `DMA_BUF_IOCTL_SYNC` (the exporter's own
+cache maintenance), and copied into a host-memory image at every commit, the way `wl_shm` frames
+are. `wayland.log` says `CPU import on`. The frame probe now prints both views of the same buffer:
+`CPU copy <hash>` and `GPU import <hash>`, from a separate import kept only for the probe. If the
+CPU copy follows the screen and the GPU import lags, the fault is in the GPU import path. If both
+lag, the producer's writes are not reaching memory. This costs one 3.7 MB copy per frame at
+about 15 fps.
