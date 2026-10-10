@@ -758,6 +758,71 @@ extern void droiddeck_on_game_frame(void);
  * ("" when /proc gave none) - the app arms its CPU affinity on it (X11 does that from window events). */
 extern void droiddeck_on_game_program(int pid, const char *program);
 
+/* Frame probe (non-Adreno GPUs, i.e. the Pixel/PowerVR Venus port): once a second, read back the
+ * dma-buf a client just committed and log a fingerprint of what this compositor actually receives -
+ * which buffer (its dma-buf inode), a content hash, how much of it is black, and whether that buffer
+ * changed since it was last probed. A buffer whose hash never changes while the client keeps
+ * committing it, or that shows something the client never drew, is stale on the way IN; if every
+ * buffer is live here and the screen still shows old pictures, the fault is on the way OUT. Each
+ * line is the client's frame as committed, before the compositor draws anything with it. */
+#define PROBE_MAX_PX (1920 * 1080)
+#define PROBE_MAX_LINES 90
+#define PROBE_SLOTS 8
+static void probe_committed_frame(struct dmabuf_buffer *b) {
+    static int enabled = -1;
+    static uint32_t *px;
+    static int64_t last_ns;
+    static int lines;
+    static struct { ino_t ino; uint32_t hash; int64_t at_ns; unsigned seen; } slot[PROBE_SLOTS];
+    if (enabled < 0) {
+        const char *gpu = vkp_gpu_name();
+        enabled = gpu && *gpu && !strstr(gpu, "Adreno");
+        if (enabled)
+            droiddeck_log("probe", "frame probe on (%s): once a second, the committed dma-buf's inode, hash and black share", gpu);
+    }
+    if (!enabled || lines >= PROBE_MAX_LINES || !b->img || b->n_planes < 1) return;
+    const int64_t t = now_ns();
+    if (t - last_ns < 1000000000LL) return;
+    if ((int64_t)b->width * b->height > PROBE_MAX_PX) return;
+    if (!px && !(px = malloc((size_t)PROBE_MAX_PX * 4))) { enabled = 0; return; }
+    last_ns = t;
+    struct stat st;
+    const ino_t ino = fstat(b->fd[0], &st) == 0 ? st.st_ino : 0;
+    if (vkp_image_readback(b->img, px, PROBE_MAX_PX) != 0) {
+        droiddeck_log("probe", "dma-buf %lu: readback failed", (unsigned long)ino);
+        lines++;
+        return;
+    }
+    const size_t n = (size_t)b->width * b->height;
+    uint32_t hash = 2166136261u;
+    size_t black = 0, sampled = 0;
+    for (size_t i = 0; i < n; i += 7) {
+        const uint32_t v = px[i] & 0x00ffffffu; /* ignore alpha: XR24 leaves it undefined */
+        hash = (hash ^ v) * 16777619u;
+        if (((v >> 16) & 0xff) < 16 && ((v >> 8) & 0xff) < 16 && (v & 0xff) < 16) black++;
+        sampled++;
+    }
+    int k = -1, free_k = -1;
+    for (int i = 0; i < PROBE_SLOTS; i++) {
+        if (slot[i].seen && slot[i].ino == ino) { k = i; break; }
+        if (!slot[i].seen && free_k < 0) free_k = i;
+    }
+    char was[64] = "first look";
+    if (k >= 0) {
+        snprintf(was, sizeof(was), "%s since %.1f s ago", slot[k].hash == hash ? "UNCHANGED" : "changed",
+                 (t - slot[k].at_ns) / 1e9);
+    } else {
+        k = free_k >= 0 ? free_k : (int)(ino % PROBE_SLOTS);
+    }
+    slot[k].ino = ino;
+    slot[k].hash = hash;
+    slot[k].at_ns = t;
+    slot[k].seen++;
+    droiddeck_log("probe", "dma-buf %lu (%dx%d, seen %u): hash %08x, %d%% black, %s", (unsigned long)ino,
+                  b->width, b->height, slot[k].seen, hash, sampled ? (int)(black * 100 / sampled) : 0, was);
+    if (++lines == PROBE_MAX_LINES) droiddeck_log("probe", "frame probe: %d lines written, stopping", lines);
+}
+
 static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_resource *buffer) {
     if (s->dmabuf != buffer || s->dmabuf_buf != b) {
         drop_dmabuf(s, 1);
@@ -777,6 +842,7 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
                   b->format, (unsigned long long)b->modifier);
         }
     }
+    probe_committed_frame(b);
     if (s->shm_img) { vkp_image_destroy(s->shm_img); s->shm_img = NULL; }
     /* The size of the frames a window commits, when it changes after the first announcement: the
      * program rebuilt its swapchain. It earns a line of its own, because a game whose swapchain

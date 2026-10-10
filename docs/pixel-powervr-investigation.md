@@ -213,3 +213,42 @@ in `session.log`:
   (the "frozen at first import" finding above), which needs a Venus-producer probe.
 
 This candidate is **not yet verified on the phone**.
+
+## Experimental4 installed test and experimental5 probe — 2026-10-10
+
+Session `2026-10-10-03-steam` (experimental4) ran gamescope with patch 0124:
+
+- `Venus: composite_force was cleared` never appears, so Steam did not switch composition off.
+- `Venus: next output image still held by the host compositor` appears once (3.8 ms, released).
+  The output-image reuse race is real but rare, and not the cause.
+- The compositor presented about 11–14 frames per second with no device loss.
+
+The user still sees flicker. In ten screenshots at 12:21, six are the live Steam sign-in screen,
+three show the DroidDeck launch logo on black, and one shows the sign-in screen with an
+**11:26** Steam clock, nearly an hour before this session started (12:20). Neither of those two
+pictures can be in anything gamescope drew in this session. The flicker therefore shows memory
+that was never written in this session, which rules out every timing explanation (late,
+partial or overwritten frames). Two places can hold such memory:
+
+1. **In:** the dma-buf the compositor imports is not (or not visibly) the memory gamescope's copy
+   writes through Venus, so the compositor copies left-over pages to the screen.
+2. **Out:** the compositor's screen swapchain on PowerVR, the system driver's Android WSI, which no
+   Adreno session uses, presents gralloc buffers whose contents are left over from earlier use.
+
+Experimental5 adds a compositor frame probe, on GPUs other than Adreno only. Once a second, for up
+to 90 lines, it reads back the dma-buf a client has just committed. It logs `probe` lines in
+`wayland.log` with the buffer's dma-buf inode, a content hash, its black share, and whether that
+buffer changed since it was last probed. How to read them:
+
+- Every gamescope buffer (normally three inodes) shows the sign-in screen: about the same black
+  share, and hashes that change when the screen changes. Then the input is good and the fault is
+  on the way out (case 2).
+- Some inode stays mostly black, or keeps a hash that none of the others ever have. Then that
+  buffer is stale on the way in (case 1), at the Venus/vtest export.
+
+A static screen keeps its hash, so `UNCHANGED` alone is not proof. Compare the buffers with one
+another.
+
+A test needing no new build: the drawer's **Zero-copy presentation** switch moves the frame onto
+an Android display layer (an AHardwareBuffer the compositor fills and hands to SurfaceFlinger),
+bypassing the screen swapchain. If the flicker stops with it on, case 2 is confirmed.

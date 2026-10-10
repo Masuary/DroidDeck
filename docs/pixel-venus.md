@@ -10,6 +10,10 @@ fork's build, screenshot and native probe results.
 Experimental3 still flickers; experimental4 adds gamescope patch 0124, which keeps Venus sessions
 on full composition even when Steam clears `GAMESCOPE_COMPOSITE_FORCE`, and stops gamescope
 overwriting an output image the host compositor has not yet released.
+Experimental4 still flickers, now showing pictures from before the session (the app's launch logo,
+an older Steam frame): left-over memory, not late frames. Experimental5 adds a compositor frame
+probe (`probe` lines in `wayland.log`) to tell whether the stale pictures arrive from gamescope or
+come from the screen swapchain.
 
 Status: **work in progress, not playable.** Steam's Big Picture sign-in screen renders on the Pixel
 (gamescope on Venus/PowerVR, Steam UI GL on llvmpipe), but the display shows frozen snapshots of
