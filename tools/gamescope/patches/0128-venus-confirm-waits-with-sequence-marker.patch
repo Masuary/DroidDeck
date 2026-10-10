@@ -1,0 +1,203 @@
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+index e763842..841b236 100644
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -1142,6 +1142,54 @@ bool CVulkanDevice::createScratchResources()
+ 		return false;
+ 	}
+ 
++	// Venus over vtest: waits on the timeline semaphore return before the GPU has finished
++	// (experimental13's readback marker caught 85-96% of frames early). Every submission now
++	// ends by writing its sequence number into this marker, and waits poll it.
++	const char *pchSeqMarker = getenv( "BL_VENUS_SEQ_MARKER" );
++	if ( env_to_bool( getenv( "BL_VENUS" ) ) && ( !pchSeqMarker || env_to_bool( pchSeqMarker ) ) )
++	{
++		VkBufferCreateInfo markerInfo = {
++			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
++			.size = k_uSeqMarkerSlots * sizeof( uint32_t ),
++			.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++		};
++		VkMemoryRequirements markerReq = {};
++		void *pMarker = nullptr;
++		bool bOk = vk.CreateBuffer( device(), &markerInfo, nullptr, &m_seqMarkerBuffer ) == VK_SUCCESS;
++		if ( bOk )
++		{
++			vk.GetBufferMemoryRequirements( device(), m_seqMarkerBuffer, &markerReq );
++			int32_t nType = findMemoryType( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, markerReq.memoryTypeBits );
++			VkMemoryAllocateInfo markerAlloc = {
++				.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++				.allocationSize = markerReq.size,
++				.memoryTypeIndex = uint32_t( nType ),
++			};
++			bOk = nType >= 0 &&
++				vk.AllocateMemory( device(), &markerAlloc, nullptr, &m_seqMarkerMemory ) == VK_SUCCESS &&
++				vk.BindBufferMemory( device(), m_seqMarkerBuffer, m_seqMarkerMemory, 0 ) == VK_SUCCESS &&
++				vk.MapMemory( device(), m_seqMarkerMemory, 0, VK_WHOLE_SIZE, 0, &pMarker ) == VK_SUCCESS;
++		}
++		if ( bOk )
++		{
++			m_pSeqMarker = (volatile uint32_t *)pMarker;
++			for ( uint32_t i = 0; i < k_uSeqMarkerSlots; i++ )
++				m_pSeqMarker[ i ] = 0;
++			vulkan_venus_clean_cpu_writes( pMarker, k_uSeqMarkerSlots * sizeof( uint32_t ) );
++			vk_log.infof( "Venus: waits confirm each submission through a GPU-written sequence marker (BL_VENUS_SEQ_MARKER=0 to trust the timeline alone)" );
++		}
++		else
++		{
++			vk_log.errorf( "Venus: could not set up the sequence marker; waits trust the timeline alone" );
++			if ( m_seqMarkerMemory )
++				vk.FreeMemory( device(), m_seqMarkerMemory, nullptr );
++			if ( m_seqMarkerBuffer )
++				vk.DestroyBuffer( device(), m_seqMarkerBuffer, nullptr );
++			m_seqMarkerMemory = VK_NULL_HANDLE;
++			m_seqMarkerBuffer = VK_NULL_HANDLE;
++		}
++	}
++
+ 	return true;
+ }
+ 
+@@ -1378,6 +1426,28 @@ std::unique_ptr<CVulkanCmdBuffer> CVulkanDevice::commandBuffer()
+ 
+ uint64_t CVulkanDevice::submitInternal( CVulkanCmdBuffer* cmdBuffer )
+ {
++	if ( m_pSeqMarker )
++	{
++		// After everything else in this submission, write its sequence number into its slot.
++		VkCommandBuffer rawMarkerCmd = cmdBuffer->rawBuffer();
++		VkMemoryBarrier afterAll = {
++			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++			.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
++			.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++		};
++		vk.CmdPipelineBarrier( rawMarkerCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
++			0, 1, &afterAll, 0, nullptr, 0, nullptr );
++		const uint64_t ulMarkerSeqNo = m_submissionSeqNo + 1;
++		vk.CmdFillBuffer( rawMarkerCmd, m_seqMarkerBuffer, ( ulMarkerSeqNo % k_uSeqMarkerSlots ) * sizeof( uint32_t ), sizeof( uint32_t ), uint32_t( ulMarkerSeqNo ) );
++		VkMemoryBarrier toHost = {
++			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++			.dstAccessMask = VK_ACCESS_HOST_READ_BIT,
++		};
++		vk.CmdPipelineBarrier( rawMarkerCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
++			0, 1, &toHost, 0, nullptr, 0, nullptr );
++	}
++
+ 	cmdBuffer->end();
+ 
+ 	// The seq no of the last submission.
+@@ -1455,6 +1525,7 @@ VkDescriptorSet CVulkanDevice::descriptorSet( CVulkanCmdBuffer *pCmdBuffer )
+ 			.pValues = &ulSeqNo,
+ 		};
+ 		vk_check( vk.WaitSemaphores( device(), &waitInfo, ~0ull ) );
++		waitForGpuSeqNo( ulSeqNo );
+ 	}
+ 
+ 	pCmdBuffer->AddDescriptorSet( uIndex );
+@@ -1472,13 +1543,69 @@ uint64_t CVulkanDevice::completedSeqNo()
+ {
+ 	uint64_t ulSeqNo = 0;
+ 	vk_check( vk.GetSemaphoreCounterValue( device(), m_scratchTimelineSemaphore, &ulSeqNo ) );
+-	return ulSeqNo;
++	return gpuSeqNo( ulSeqNo );
++}
++
++uint64_t CVulkanDevice::gpuSeqNo( uint64_t ulSemaphoreValue )
++{
++	if ( !m_pSeqMarker )
++		return ulSemaphoreValue;
++	vulkan_venus_clean_cpu_writes( (const void *)m_pSeqMarker, k_uSeqMarkerSlots * sizeof( uint32_t ) );
++	// Advance over the submissions whose slots hold their own number. A later number in the slot
++	// (written 64 submissions on) also counts: with at most 8 in flight, this one is long done.
++	while ( m_ulGpuSeqNo < ulSemaphoreValue &&
++		int32_t( m_pSeqMarker[ ( m_ulGpuSeqNo + 1 ) % k_uSeqMarkerSlots ] - uint32_t( m_ulGpuSeqNo + 1 ) ) >= 0 )
++		m_ulGpuSeqNo++;
++	return std::min( m_ulGpuSeqNo, ulSemaphoreValue );
++}
++
++void CVulkanDevice::waitForGpuSeqNo( uint64_t ulSeqNo )
++{
++	if ( !m_pSeqMarker )
++		return;
++
++	static uint64_t s_ulWindowStart = 0;
++	static uint32_t s_uWaits = 0, s_uLate = 0, s_uTimeouts = 0, s_uSummaries = 0;
++	static uint64_t s_ulWorstWait = 0;
++
++	s_uWaits++;
++	if ( gpuSeqNo( ulSeqNo ) < ulSeqNo )
++	{
++		s_uLate++;
++		const uint64_t ulStart = get_time_in_nanos();
++		uint64_t ulWaited = 0;
++		while ( gpuSeqNo( ulSeqNo ) < ulSeqNo && ulWaited < 1'000'000'000ull )
++		{
++			usleep( 100 );
++			ulWaited = get_time_in_nanos() - ulStart;
++		}
++		s_ulWorstWait = std::max( s_ulWorstWait, ulWaited );
++		if ( gpuSeqNo( ulSeqNo ) < ulSeqNo )
++			s_uTimeouts++;
++	}
++
++	const uint64_t ulNow = get_time_in_nanos();
++	if ( !s_ulWindowStart )
++		s_ulWindowStart = ulNow;
++	if ( ulNow - s_ulWindowStart >= 5'000'000'000ull )
++	{
++		if ( s_uLate || s_uSummaries < 3 )
++		{
++			s_uSummaries++;
++			vk_log.infof( "Venus: %u of %u waits returned before the GPU finished (longest extra wait %.1f ms, %u timeouts after 1 s)",
++				s_uLate, s_uWaits, s_ulWorstWait / 1e6, s_uTimeouts );
++		}
++		s_ulWindowStart = ulNow;
++		s_uWaits = s_uLate = s_uTimeouts = 0;
++		s_ulWorstWait = 0;
++	}
+ }
+ 
+ void CVulkanDevice::garbageCollect( void )
+ {
+ 	uint64_t currentSeqNo;
+ 	vk_check( vk.GetSemaphoreCounterValue(device(), m_scratchTimelineSemaphore, &currentSeqNo) );
++	currentSeqNo = gpuSeqNo( currentSeqNo );
+ 
+ 	// wait() only resets the ring on a latest-wait, which stale waits never are.
+ 	if ( currentSeqNo == m_submissionSeqNo )
+@@ -1624,6 +1751,7 @@ void CVulkanDevice::wait(uint64_t sequence, bool reset)
+ 	} ;
+ 
+ 	vk_check( vk.WaitSemaphores( device(), &waitInfo, ~0ull ) );
++	waitForGpuSeqNo( sequence );
+ 
+ 	if (reset)
+ 		resetCmdBuffers(sequence);
+diff --git a/src/rendervulkan.hpp b/src/rendervulkan.hpp
+index 65b99f2..76133e7 100644
+--- a/src/rendervulkan.hpp
++++ b/src/rendervulkan.hpp
+@@ -882,6 +882,11 @@ public:
+ 	inline VkCommandPool generalCommandPool() {return m_generalCommandPool;}
+ 	inline uint32_t queueFamily() {return m_queueFamily;}
+ 	uint64_t completedSeqNo();
++	// Venus: the timeline semaphore can report a submission done before the GPU has run it. Each
++	// submission also writes its sequence number into its own slot of a host-visible ring; these
++	// count a submission done once it and every earlier one have written theirs.
++	uint64_t gpuSeqNo( uint64_t ulSemaphoreValue );
++	void waitForGpuSeqNo( uint64_t ulSeqNo );
+ 	inline uint32_t generalQueueFamily() {return m_generalQueueFamily;}
+ 	inline VkBuffer uploadBuffer() {return m_uploadBuffer;}
+ 	inline VkPipelineLayout pipelineLayout() {return m_pipelineLayout;}
+@@ -980,6 +985,11 @@ protected:
+ 	uint32_t m_uploadBufferOffset = 0;
+ 
+ 	VkSemaphore m_scratchTimelineSemaphore;
++	VkBuffer m_seqMarkerBuffer = VK_NULL_HANDLE;
++	VkDeviceMemory m_seqMarkerMemory = VK_NULL_HANDLE;
++	volatile uint32_t *m_pSeqMarker = nullptr; // k_uSeqMarkerSlots slots
++	static constexpr uint32_t k_uSeqMarkerSlots = 64;
++	uint64_t m_ulGpuSeqNo = 0;
+ 	std::atomic<uint64_t> m_submissionSeqNo = { 0 };
+ 	std::vector<std::unique_ptr<CVulkanCmdBuffer>> m_unusedCmdBufs;
+ 	std::map<uint64_t, std::unique_ptr<CVulkanCmdBuffer>> m_pendingCmdBufs;

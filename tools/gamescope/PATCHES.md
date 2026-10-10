@@ -108,3 +108,12 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   5 s with a late frame (and for the first three windows regardless) it logs `Venus readback: N of
   M frames read before the GPU finished them (worst K frames behind ...)`.
   `BL_VENUS_READBACK_WAIT=0` only measures.
+- `0128-venus-confirm-waits-with-sequence-marker.patch` - this fork, `BL_VENUS=1` (opt out with
+  `BL_VENUS_SEQ_MARKER=0`): 0127 showed that waits on gamescope's timeline semaphore return before
+  the GPU has finished the submission under Venus over vtest (85-96% of frames). gamescope relies on
+  those waits to reset command buffers, drop texture references and reuse its upload buffer, so
+  every wait is now confirmed: each submission ends by writing its sequence number into its own
+  slot of a 64-slot host-visible ring (after an all-commands barrier), and `wait()`, the descriptor
+  set wait, `completedSeqNo()` and `garbageCollect()` count a submission done only once it and every
+  earlier one have written theirs (polling up to 1 s). Every 5 s with a late wait (and for the first
+  three windows regardless) it logs `Venus: N of M waits returned before the GPU finished`.

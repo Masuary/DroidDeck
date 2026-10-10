@@ -469,3 +469,32 @@ marker after the readback copy, and the host checks it after the wait. `session.
   buffer reuse in gamescope, so the general fix then belongs in the Venus/vtest fence path.
 
 **Not yet verified on the phone.**
+
+## Experimental13 result and experimental14 — 2026-10-10
+
+Session `2026-10-10-16-steam` (`0.3.1-pixel-experimental13`) with an 87 s recording (X probe t=0 at
+17:57:40, 4.6 s into it).
+
+- **The early wait is real.** 0127's summaries: 85–96% of frames in every 5 s window were read before
+  the GPU had finished them, usually one frame behind; polling the marker caught up within 2–17 ms,
+  with no timeouts.
+- **It still flickers, differently.** No torn or dialog-less frames any more: the screen alternates
+  between whole, fixed pictures, the startup logo and the sign-in screen every 0.1–0.2 s (recording
+  28–38 s), later two or three fixed sign-in variants.
+- Steam's X windows show only the sign-in screen at that time; the logo (X frame 53, t=20 s) never
+  reappears. gamescope never fell back to dma-bufs, and the compositor's wl_shm path is sound. So
+  gamescope composites old textures of Steam's window.
+
+gamescope trusts the same early wait to reset command buffers, drop references to commit textures
+and reuse its upload buffer. If those happen while the GPU is behind, the copy of Steam's new window
+contents can be lost and a recycled texture keeps an old picture, which fits whole fixed pictures
+taking turns. **Hypothesis.**
+
+Experimental14 adds gamescope patch 0128, which fixes the wait itself: every submission writes its
+sequence number into its own slot of a host-visible ring, and gamescope's waits and completion checks
+count a submission done only when it and all earlier ones have written theirs. Look for `Venus: waits
+confirm each submission through a GPU-written sequence marker`, then `Venus: N of M waits returned
+before the GPU finished` (how often the timeline lied), and 0127's `Venus readback:` lines, which
+should now report 0 late frames. Then check the recording for the old pictures. If they are gone, the
+real fix belongs in Venus/vtest's timeline-semaphore handling. If they remain with 0 late readbacks,
+the next probe is gamescope's per-window textures. **Not yet verified on the phone.**
