@@ -580,3 +580,36 @@ confirmation and resuming), Steam's "Loading user data" screen and the account s
 Brightness is constant within almost every second, there are no black blocks, and no old picture
 comes back; the only repeating pictures are the loading spinner's rotation frames. 0128 logged its
 three opening summaries and no timeouts. The flicker is fixed by 0130, with 0128 required.
+
+## Games: DXVK needs BC texture compression — 2026-10-10
+
+The first game tried on experimental17, Librarian: Tidy Up the Arcane Library! (app 4197610, Unreal
+Engine 5.5.3, x86-64 under Proton Experimental ARM64), crashes at start inside `dxgi.dll`
+(`EXCEPTION_ACCESS_VIOLATION reading address 0x28`, game thread, 0 s after start). With
+`PROTON_LOG=1 DXVK_LOG_LEVEL=info`, DXVK says why:
+
+```
+info:  Found device: Virtio-GPU Venus (PowerVR D-Series DXT-48-1536 MC1) (venus 26.2.4)
+info:    Skipping: Device does not support required feature 'textureCompressionBC'
+warn:  DXVK: No adapters found.
+err:   Failed to initialize DXVK.
+```
+
+PowerVR has no BC (S3TC/DXT/BC4-7) texture compression; it has ASTC LDR and ETC2. With
+`PROTON_USE_WINED3D=1` (Wine's renderer on CPU OpenGL) the same game starts and runs at about one
+frame per 2-3 s, so the game works and BC is the blocker for the GPU path.
+
+`tools/venus/probes/vkprobe-dxvk-requirements.c` checks DXVK 3.1.1's required features that come after
+`textureCompressionBC` in its list (those before it passed in the game run). On the native driver
+everything is present except BC; `maxPushConstantsSize` is exactly the required 256. Venus may hide
+something the native driver has; DXVK would name it once BC is handled. Build it from this repository
+in Termux, or cross-compile for `aarch64-linux-android29` and run it with `adb shell`:
+
+```sh
+clang -std=c11 -Wall -I../vulkan-headers/include tools/venus/probes/vkprobe-dxvk-requirements.c \
+  -o .local-tests/vkprobe-dxvk-requirements -L/system/lib64 -lvulkan
+```
+
+So D3D games on this GPU need BC emulation between DXVK and the driver: report `textureCompressionBC`,
+back BC images with uncompressed formats, and decode blocks (ideally in a compute shader) on upload
+and copies. Not started.
