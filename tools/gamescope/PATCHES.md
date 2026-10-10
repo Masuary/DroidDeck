@@ -125,3 +125,13 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
   is written every frame and never exported, and the CPU swaps red and blue while filling the
   XRGB8888 wl_shm buffer. `session.log` says `Venus readback: from the private composite image`.
   `BL_VENUS_READBACK_FROM_SHARED=1` reads the shared image again, for an A/B comparison.
+- `0130-venus-copy-shm-windows-at-every-commit.patch` - this fork, `BL_VENUS=1` (opt out with
+  `BL_VENUS_SHM_MEMO=1`): the cause of the Pixel flicker. Xwayland has no glamor under Venus
+  ("falling back to sw"), so it hands Steam's windows to gamescope as wl_shm buffers and reuses a
+  few of them. gamescope memoizes one texture per wlr_buffer and drops it only when the buffer is
+  destroyed - right for a dma-buf, whose texture shares its memory, but for wl_shm the texture is a
+  copy taken at the first import. Every reuse of a buffer then showed the picture it held when
+  first seen: the startup logo, black and old sign-in frames taking turns, a whole state behind
+  Steam. Under Venus a wl_shm buffer is now copied into a new texture at every commit (the commit's
+  reference keeps it alive while shown); dma-bufs stay memoized. Logged once: `Venus: wl_shm windows
+  are copied at every commit, not memoized`.

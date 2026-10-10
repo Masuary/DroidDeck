@@ -523,3 +523,29 @@ composite image instead (written every frame, never exported), with red and blue
 for the XRGB8888 wl_shm frame. `BL_VENUS_READBACK_FROM_SHARED=1` restores the old source for an A/B
 comparison. If the rotation stops, the fault is in LINEAR exportable images under Venus on PowerVR,
 which is what to reproduce and report upstream. **Not yet verified on the phone.**
+
+## Experimental15 result: the cause — experimental16
+
+Session `2026-10-10-18-steam` (`0.3.1-pixel-experimental15`, 35 s adb recording; recording time =
+X-probe time − 21 s). 0129 reads back the private composite, waits are confirmed (0128) and no
+readback is late, yet the screen is a whole state behind Steam: logo ↔ black while the X windows show
+the sign-in screen, then logo ↔ sign-in while they show the side menu. With the output path clean,
+the old pictures are in what gamescope composites.
+
+**Cause.** Under Venus, Xwayland has no glamor (`Failed to initialize glamor, falling back to sw`),
+so it hands Steam's windows to gamescope as **wl_shm** buffers and reuses a small set of them.
+gamescope memoizes one texture per `wlr_buffer` (`s_BufferMemos` in `create_new_commit`) and drops it
+only when the buffer is destroyed. For a dma-buf the texture shares the buffer's memory; for wl_shm
+it is a copy made at the first import. Each reuse of a buffer then shows the picture that buffer held
+when gamescope first saw it. That explains the whole history: a few fixed old pictures taking turns
+(one per Xwayland buffer), the startup logo and black long after they were drawn, new pictures only
+when Xwayland allocated a new buffer, and why Adreno sessions (glamor, dma-bufs) never flicker.
+Experimental2–15 all changed things downstream of it. The waits (0128) and the shared-image readback
+(0129) were real problems too, but not the cause of the flicker.
+
+Experimental16 adds gamescope patch 0130: under Venus a wl_shm buffer is copied into a new texture at
+every commit; dma-bufs stay memoized; `BL_VENUS_SHM_MEMO=1` restores the old behaviour for A/B.
+`session.log` shows `Venus: wl_shm windows are copied at every commit, not memoized`. The session
+script also accepts a test gamescope at `files/linuxfs/root/.droiddeck-test/gamescope` (copied in with
+`adb shell run-as`), so gamescope-only experiments no longer need an APK build. **Not yet verified on
+the phone.**

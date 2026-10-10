@@ -1,0 +1,53 @@
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+index 3fab3c6..279297b 100644
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -1866,16 +1866,34 @@ import_commit (
+ 		commit->fifo = false;
+ 	}
+ 
+-	if ( gamescope::OwningRc<CVulkanTexture> pTexture = s_BufferMemos.LookupVulkanTexture( buf ) )
++	// A memoized texture shares a dma-buf's memory, but for a wl_shm buffer it is a copy taken at
++	// the first import. Xwayland has no glamor under Venus, hands windows over as wl_shm and reuses
++	// those buffers, so a memo would show each buffer's first picture again on every reuse (the
++	// Pixel flicker: the startup logo, black and old sign-in frames taking turns). Under Venus a
++	// wl_shm buffer is copied afresh at every commit; BL_VENUS_SHM_MEMO=1 memoizes it again.
++	struct wlr_dmabuf_attributes dmabuf = {0};
++	const bool bDmabuf = wlr_buffer_get_dmabuf( buf, &dmabuf );
++	static const bool s_bFreshShm = env_to_bool( getenv( "BL_VENUS" ) ) && !env_to_bool( getenv( "BL_VENUS_SHM_MEMO" ) );
++	const bool bMemoize = bDmabuf || !s_bFreshShm;
++	if ( !bMemoize )
++	{
++		static bool s_bSaid = false;
++		if ( !s_bSaid )
++		{
++			s_bSaid = true;
++			xwm_log.infof( "Venus: wl_shm windows are copied at every commit, not memoized (BL_VENUS_SHM_MEMO=1 to memoize)" );
++		}
++	}
++
++	if ( gamescope::OwningRc<CVulkanTexture> pTexture = bMemoize ? s_BufferMemos.LookupVulkanTexture( buf ) : nullptr )
+ 	{
+ 		// Going from OwningRc -> Rc now.
+ 		commit->vulkanTex = pTexture;
+ 		return commit;
+ 	}
+ 
+-	struct wlr_dmabuf_attributes dmabuf = {0};
+ 	gamescope::OwningRc<gamescope::IBackendFb> pBackendFb;
+-	if ( wlr_buffer_get_dmabuf( buf, &dmabuf ) )
++	if ( bDmabuf )
+ 	{
+ 		pBackendFb = GetBackend()->ImportDmabufToBackend( &dmabuf );
+ 	}
+@@ -1889,7 +1907,9 @@ import_commit (
+ 
+ 	commit->vulkanTex = pOwnedTexture;
+ 
+-	s_BufferMemos.MemoizeBuffer( buf, std::move( pOwnedTexture ) );
++	// Unmemoized, the commit's reference keeps the copy alive for as long as it is shown.
++	if ( bMemoize )
++		s_BufferMemos.MemoizeBuffer( buf, std::move( pOwnedTexture ) );
+ 
+ 	return commit;
+ }

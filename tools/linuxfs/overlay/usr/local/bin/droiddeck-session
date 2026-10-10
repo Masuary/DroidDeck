@@ -13,6 +13,12 @@ shift || true
 # One line per milestone, greppable as "== STEP", so a first run reads as a narrative rather than
 # something to be reconstructed from Steam's own chatter. The app shows these while it waits.
 step() { echo "== STEP $(date -u +%H:%M:%S) $*"; }
+# A test gamescope, copied in over `adb shell run-as` for a gamescope-only experiment
+# (files/linuxfs/root/.droiddeck-test/gamescope), replaces the bundled one: the app re-stages
+# /usr/local/bin/gamescope at every session start. Delete it to go back.
+GAMESCOPE_BIN=gamescope
+[ -x /root/.droiddeck-test/gamescope ] && GAMESCOPE_BIN=/root/.droiddeck-test/gamescope
+
 if [ -n "${BL_LOG:-}" ] && [ -z "${BL_INSIDE:-}" ]; then
   mkdir -p "$(dirname "$BL_LOG")" 2>/dev/null
   # The client alone writes megabytes an hour; one earlier log is kept, not every session's.
@@ -25,7 +31,9 @@ if [ -n "${BL_LOG:-}" ] && [ -z "${BL_INSIDE:-}" ]; then
   exec > >({ dd of="$BL_LOG" oflag=append conv=notrunc iflag=count_bytes count="${BL_LOG_CAP:-268435456}" bs=65536 status=none; cat >/dev/null; }) 2>&1
   echo "== droiddeck-session $(date) mode=$mode $*"
   echo "== uid=$(id -u) size=${BL_WIDTH:-?}x${BL_HEIGHT:-?} fps=${BL_FPS:-0} icd=${VK_ICD_FILENAMES:-none}"
-  echo "== gamescope: $(gamescope --version 2>&1 | head -1) at $(command -v gamescope)"
+  [ "$GAMESCOPE_BIN" = gamescope ] ||
+    echo "== TEST gamescope in use: $GAMESCOPE_BIN ($(stat -c '%y %s bytes' "$GAMESCOPE_BIN"))"
+  echo "== gamescope: $("$GAMESCOPE_BIN" --version 2>&1 | head -1) at $(command -v "$GAMESCOPE_BIN")"
   echo "== rootfs: $(cat /.version 2>/dev/null || echo unversioned)"
 fi
 
@@ -205,7 +213,7 @@ if [ -z "${BL_INSIDE:-}" ]; then
     echo "== gamescope: mangoapp on ($(command -v mangoapp), config $MANGOHUD_CONFIGFILE)"
   fi
   export BL_INSIDE=1
-  exec gamescope "${args[@]}" -- "$0" "$mode" "$@"
+  exec "$GAMESCOPE_BIN" "${args[@]}" -- "$0" "$mode" "$@"
 fi
 
 # gamescope manages X windows: toolkits go through Xwayland, not gamescope's own Wayland socket.
