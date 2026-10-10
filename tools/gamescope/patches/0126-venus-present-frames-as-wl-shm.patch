@@ -1,8 +1,8 @@
 diff --git a/src/Backends/WaylandBackend.cpp b/src/Backends/WaylandBackend.cpp
-index a30c5f1..873a1f4 100644
+index a30c5f1..ca3b83d 100644
 --- a/src/Backends/WaylandBackend.cpp
 +++ b/src/Backends/WaylandBackend.cpp
-@@ -1146,6 +1146,92 @@ namespace gamescope
+@@ -1146,6 +1146,91 @@ namespace gamescope
                  (unsigned long)s_ulWaits, (unsigned long)s_ulTimeouts );
      }
  
@@ -36,7 +36,7 @@ index a30c5f1..873a1f4 100644
 +    }
 +
 +    // A buffer the compositor has released, (re)made at this size; waits up to 50 ms for one.
-+    static VenusShmBuffer *VenusShmAcquire( CWaylandBackend *pBackend, uint32_t uWidth, uint32_t uHeight )
++    static VenusShmBuffer *VenusShmAcquire( wl_shm *pShm, wl_display *pDisplay, uint32_t uWidth, uint32_t uHeight )
 +    {
 +        const uint64_t ulDeadline = get_time_in_nanos() + 50'000'000ul;
 +        for ( ;; )
@@ -58,7 +58,7 @@ index a30c5f1..873a1f4 100644
 +                    close( nFd );
 +                    return nullptr;
 +                }
-+                wl_shm_pool *pPool = wl_shm_create_pool( pBackend->GetShm(), nFd, int32_t( uSize ) );
++                wl_shm_pool *pPool = wl_shm_create_pool( pShm, nFd, int32_t( uSize ) );
 +                buf.pBuffer = wl_shm_pool_create_buffer( pPool, 0, int32_t( uWidth ), int32_t( uHeight ), int32_t( uWidth * 4 ), WL_SHM_FORMAT_XRGB8888 );
 +                wl_shm_pool_destroy( pPool );
 +                close( nFd );
@@ -73,7 +73,6 @@ index a30c5f1..873a1f4 100644
 +            const uint64_t ulNow = get_time_in_nanos();
 +            if ( ulNow >= ulDeadline )
 +                return nullptr;
-+            wl_display *pDisplay = pBackend->GetDisplay();
 +            wl_display_flush( pDisplay );
 +            if ( wl_display_prepare_read( pDisplay ) == 0 )
 +            {
@@ -95,14 +94,14 @@ index a30c5f1..873a1f4 100644
      int CWaylandConnector::Present( const FrameInfo_t *pFrameInfo, bool bAsync )
      {
          UpdateFullscreenState();
-@@ -1258,7 +1344,49 @@ namespace gamescope
+@@ -1258,7 +1343,49 @@ namespace gamescope
                  compositeLayer.ctm = nullptr;
                  compositeLayer.colorspace = pFrameInfo->outputEncodingEOTF == EOTF_PQ ? GAMESCOPE_APP_TEXTURE_COLORSPACE_HDR10_PQ : GAMESCOPE_APP_TEXTURE_COLORSPACE_SRGB;
  
 -                m_Planes[0].Present( &compositeLayer );
 +                uint32_t uShmWidth = 0, uShmHeight = 0;
 +                const void *pShmFrame = VenusSession() ? vulkan_venus_readback( &uShmWidth, &uShmHeight ) : nullptr;
-+                VenusShmBuffer *pShm = pShmFrame ? VenusShmAcquire( m_pBackend, uShmWidth, uShmHeight ) : nullptr;
++                VenusShmBuffer *pShm = pShmFrame ? VenusShmAcquire( m_pBackend->GetShm(), m_pBackend->GetDisplay(), uShmWidth, uShmHeight ) : nullptr;
 +                if ( pShm )
 +                {
 +                    static bool s_bSaid = false;
