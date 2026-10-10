@@ -1,11 +1,12 @@
 # DroidDeck on non-Adreno GPUs through Venus (Pixel 10 Pro XL, PowerVR)
 
-**Masuary fork, experimental2 (2026-10-09):** the first Pixel APK reaches the
-Steam login screen on the user's phone, with flicker. This candidate corrects
-the compositor's DMA-BUF ownership and layout transitions. Its effect on the
-flicker still needs an installed-app test. The original port's findings below
-remain relevant; see [the phone investigation](pixel-powervr-investigation.md)
-for this fork's build and test results.
+**Masuary fork, experimental3 candidate (2026-10-10):** the installed
+experimental2 still shows stale Steam frames and black regions despite its
+compositor ownership corrections. Experimental3 tests composing into a private
+optimal image and copying each completed frame to the LINEAR shared output,
+avoiding storage writes to shared images. Its effect still needs an installed
+app test. See [the phone investigation](pixel-powervr-investigation.md) for this
+fork's build, screenshot and native probe results.
 
 Status: **work in progress, not playable.** Steam's Big Picture sign-in screen renders on the Pixel
 (gamescope on Venus/PowerVR, Steam UI GL on llvmpipe), but the display shows frozen snapshots of

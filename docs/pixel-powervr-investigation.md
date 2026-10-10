@@ -1,8 +1,9 @@
 # Pixel 10 Pro XL investigation — 2026-10-09
 
 Status: the experimental Pixel APK reaches Steam's login screen on this phone.
-The user reports flickering between DroidDeck and Steam. Stable presentation and
-game support are **not yet verified**.
+The installed experimental2 build still flickers. The latest screenshots show
+old Steam frames and black regions while Android controls remain intact. Stable
+presentation and game support are **not yet verified**.
 
 ## Source and device
 
@@ -120,3 +121,56 @@ The updated compositor passes the native C syntax check. Install the candidate
 over DroidDeck Pixel, stop the old session and start Steam again, and verify both
 the version and the new `dma-buf handoff` line in `wayland.log` before assessing
 whether login redraws and input are stable.
+
+
+## Experimental2 installed test and experimental3 candidate — 2026-10-10
+
+Session `2026-10-10-01-steam` identifies version `0.3.1-pixel-experimental2`
+(package `com.droiddeck.launcher.pixel`, runtime r9). The new DMA-BUF handoff
+message appears in `wayland.log`, so this was the intended compositor build.
+Seven screenshots taken between 03:18:59 and 03:19:04 show complete Steam login
+frames alternating with partially black frames. An older 03:17 Steam clock
+reappears among frames showing 03:18. The on-screen controls stay intact. The
+captures support stale or incomplete frame contents; they do not show Android
+switching repeatedly between activities.
+
+The compositor logs one Steam window and continues presenting roughly 7–14
+frames per second. There is no GPU device-loss error or crash during the capture
+interval. Steam later exits at the app's request, with status 0. Steam's GPU
+report confirms its UI uses llvmpipe. **The experimental2 ownership corrections
+did not fix the visible issue.** Raw screenshots and account/session logs are
+kept on the phone and are not included in the repository.
+
+A further native diagnostic, `tools/venus/probes/vkprobe-sharing-compute.c`,
+uses two Vulkan instances in one process with a 1280x720 shared image. Six
+alternating RGB fills pass (921,600 pixels per frame) both with `--compute`
+(direct LINEAR storage writes) and `--copy` (OPTIMAL compute, then a transfer copy
+to a LINEAR image without storage usage). A temporary variant also passes with
+a mutable-format optimal image. As before, these are native tests, **not a
+reproduction through Venus**. Direct LINEAR storage is diagnostic only because
+the driver does not advertise the required modifier feature.
+
+Experimental3 tests gamescope patch `0123-venus-copy-optimal-output-to-linear`:
+when `BL_VENUS=1` on the nested modifier backend, compose into a private optimal
+image, then copy the full frame into the selected LINEAR shared output image.
+The shared outputs have transfer-destination usage instead of storage usage.
+The copy stays in the composition submission; existing barriers release it to
+FOREIGN in GENERAL and Wayland waits for completion before committing it. The
+private target is recreated with output size/format changes. Other backends and
+explicit output overrides retain their existing path.
+
+The next installed test must show `0.3.1-pixel-experimental3` in `device.txt` and
+`Venus output: optimal compute -> LINEAR transfer copy` in `session.log`.
+Then check animation, the clock, and input for stale frames or black rectangles.
+This candidate is **not yet verified to solve the flicker**, and accelerated
+Steam UI/game support remains unfinished.
+
+Build the full-size native diagnostic from the repository root:
+
+```sh
+clang -std=c11 -Wall -Wextra -Werror -I../vulkan-headers/include \
+  tools/venus/probes/vkprobe-sharing-compute.c \
+  -o .local-tests/vkprobe-sharing-compute -L/system/lib64 -lvulkan
+timeout 25 .local-tests/vkprobe-sharing-compute --compute
+timeout 25 .local-tests/vkprobe-sharing-compute --copy
+```
