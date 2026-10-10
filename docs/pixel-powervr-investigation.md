@@ -180,3 +180,36 @@ timeout 25 .local-tests/vkprobe-sharing-compute --compute
 timeout 25 .local-tests/vkprobe-sharing-compute --copy
 timeout 25 .local-tests/vkprobe-sharing-compute --copy --bgra-output
 ```
+
+## Experimental3 still flickers; experimental4 candidate — 2026-10-10
+
+The user reports that experimental3 (build `5545281`, the optimal-RGBA-then-copy output of
+gamescope patch 0123) still flickers. Two gamescope behaviours remain outside everything tested so
+far, and neither shows on Adreno, where the host compositor keeps up with gamescope:
+
+- **Forced composition is not sticky.** `--force-composition` only sets gamescope's
+  `composite_force` convar. Steam can rewrite it through the `GAMESCOPE_COMPOSITE_FORCE` root
+  property (`steamcompmgr.cpp`, property handler), and the nested Wayland backend then stops
+  compositing: it presents a black single-pixel backing buffer plus Steam's own textures as
+  subsurfaces. Those textures never pass through 0123's copy, so frames switching between the two
+  paths would explain complete login frames alternating with partially black ones.
+- **Output images ignore `wl_buffer.release`.** `vulkan_composite` cycles `nOutImage` through three
+  images unconditionally. The PowerVR session presents only about 7–14 frames per second, so the
+  compositor can still be reading the image gamescope writes next.
+
+Experimental4 adds gamescope patch `0124-venus-keep-composition-and-wait-for-output-release`
+(Venus sessions only): the Wayland backend composites every frame whatever `composite_force` says,
+and waits up to 100 ms for the host's release of the next output image before writing it.
+
+Check in the next installed test (`0.3.1-pixel-experimental4` in `device.txt`). In gamescope's output
+in `session.log`:
+
+- `Venus: composite_force was cleared` means Steam did turn composition off, so the first cause was
+  real.
+- `Venus: next output image still held by the host compositor` shows how often the second race
+  happens, and whether a release ever times out.
+- No such lines plus continuing flicker rules out both causes. In that case the remaining
+  candidate is the visibility of Venus-side writes in the compositor's import of the same dma-buf
+  (the "frozen at first import" finding above), which needs a Venus-producer probe.
+
+This candidate is **not yet verified on the phone**.

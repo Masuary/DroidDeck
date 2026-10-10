@@ -7,6 +7,9 @@ optimal RGBA image and copying/converting each completed frame to the LINEAR sha
 avoiding storage writes to shared images. Its effect still needs an installed
 app test. See [the phone investigation](pixel-powervr-investigation.md) for this
 fork's build, screenshot and native probe results.
+Experimental3 still flickers; experimental4 adds gamescope patch 0124, which keeps Venus sessions
+on full composition even when Steam clears `GAMESCOPE_COMPOSITE_FORCE`, and stops gamescope
+overwriting an output image the host compositor has not yet released.
 
 Status: **work in progress, not playable.** Steam's Big Picture sign-in screen renders on the Pixel
 (gamescope on Venus/PowerVR, Steam UI GL on llvmpipe), but the display shows frozen snapshots of

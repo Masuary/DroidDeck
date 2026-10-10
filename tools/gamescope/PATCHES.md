@@ -69,3 +69,15 @@ app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the
 - `0122-log-failing-pipeline-variant.patch` - this fork, diagnostic: when vkCreateComputePipelines
   fails, log the shader type and specialization values, so a driver that refuses only some
   composite variants (PowerVR through Venus: VK_ERROR_UNKNOWN) shows which.
+- `0123-venus-copy-optimal-output-to-linear.patch` - this fork: with `BL_VENUS=1` on the nested
+  modifier backend, compose into a private optimal RGBA image (PowerVR has no STORAGE_IMAGE on the
+  LINEAR shared images, nor on optimal BGRA8) and copy, or blit to convert BGRA, the finished frame
+  into the LINEAR output image the host compositor imports.
+- `0124-venus-keep-composition-and-wait-for-output-release.patch` - this fork, `BL_VENUS=1` only:
+  (1) the Wayland backend composites every frame. `--force-composition` only sets `composite_force`,
+  which Steam can reset through the `GAMESCOPE_COMPOSITE_FORCE` root property; gamescope then hands
+  the host Steam's own textures over a black backing plane instead, and those never got 0123's
+  output copy. The first time that happens is logged. (2) The three output images rotate without
+  regard to `wl_buffer.release`; before composing into one the host compositor still holds, wait up
+  to 100 ms (dispatching Wayland events) for its release, so a host presenting more slowly than
+  gamescope composites never reads a frame being overwritten. Waits and timeouts are logged.

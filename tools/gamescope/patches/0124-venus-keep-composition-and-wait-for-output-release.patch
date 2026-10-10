@@ -1,0 +1,159 @@
+diff --git a/src/Backends/WaylandBackend.cpp b/src/Backends/WaylandBackend.cpp
+index c400978..a30c5f1 100644
+--- a/src/Backends/WaylandBackend.cpp
++++ b/src/Backends/WaylandBackend.cpp
+@@ -48,6 +48,7 @@ extern bool g_bBorderlessOutputWindow;
+ extern gamescope::ConVar<bool> cv_adaptive_sync;
+ 
+ extern gamescope::ConVar<bool> cv_composite_force;
++extern bool env_to_bool(const char *env);
+ extern bool g_bColorSliderInUse;
+ extern bool fadingOut;
+ extern std::string g_reshade_effect;
+@@ -496,6 +497,7 @@ namespace gamescope
+ 
+         wl_buffer *GetHostBuffer() const { return m_pHostBuffer; }
+         wlr_buffer *GetClientBuffer() const { return m_pClientBuffer; }
++        bool IsCompositorAcquired() const { return m_bCompositorAcquired; }
+ 
+         void Wayland_Buffer_Release( wl_buffer *pBuffer );
+         static const wl_buffer_listener s_BufferListener;
+@@ -1072,6 +1074,78 @@ namespace gamescope
+         }
+     }
+ 
++    // Venus (BL_VENUS=1, the Pixel/PowerVR port): the host compositor can only show
++    // gamescope's own composited output. Steam can set GAMESCOPE_COMPOSITE_FORCE to 0, which
++    // overrides --force-composition; without composition the planes carry client textures
++    // and a black backing buffer, which did not get the Venus output copy (0123).
++    static bool VenusSession()
++    {
++        static const bool s_bVenus = env_to_bool( getenv( "BL_VENUS" ) );
++        return s_bVenus;
++    }
++
++    // Output images rotate without regard to wl_buffer.release. A host compositor that
++    // presents more slowly than gamescope composites can still be reading the image the
++    // next frame would overwrite. Wait a bounded time for its release before writing it.
++    static void WaitForOutputImageRelease( wl_display *pDisplay )
++    {
++        gamescope::Rc<CVulkanTexture> pNext = vulkan_get_next_output_image();
++        if ( pNext == nullptr || pNext->GetBackendFb() == nullptr )
++            return;
++
++        // Same lookup as CWaylandPlane::Present: the image was imported when it was last presented.
++        CWaylandFb *pFb = static_cast<CWaylandFb *>( pNext->GetBackendFb()->EnsureImported() );
++        if ( !pFb || !pFb->IsCompositorAcquired() )
++            return;
++
++        static uint64_t s_ulWaits = 0;
++        static uint64_t s_ulTimeouts = 0;
++        const uint64_t ulStart = get_time_in_nanos();
++        const uint64_t ulDeadline = ulStart + 100'000'000ul;
++
++        wl_display_flush( pDisplay );
++        while ( pFb->IsCompositorAcquired() )
++        {
++            const uint64_t ulNow = get_time_in_nanos();
++            if ( ulNow >= ulDeadline )
++                break;
++
++            if ( wl_display_prepare_read( pDisplay ) != 0 )
++            {
++                wl_display_dispatch_pending( pDisplay );
++                continue;
++            }
++
++            pollfd pollfd =
++            {
++                .fd     = wl_display_get_fd( pDisplay ),
++                .events = POLLIN,
++            };
++            int nTimeoutMs = int( std::max<uint64_t>( 1, ( ulDeadline - ulNow ) / 1'000'000ul ) );
++            int nRet;
++            do
++            {
++                nRet = poll( &pollfd, 1, nTimeoutMs );
++            } while ( nRet < 0 && ( errno == EINTR || errno == EAGAIN ) );
++
++            if ( nRet > 0 )
++                wl_display_read_events( pDisplay );
++            else
++                wl_display_cancel_read( pDisplay );
++            wl_display_dispatch_pending( pDisplay );
++        }
++
++        s_ulWaits++;
++        const bool bTimedOut = pFb->IsCompositorAcquired();
++        if ( bTimedOut )
++            s_ulTimeouts++;
++        // First occurrence, then every 300th, so the session log shows how often it happens.
++        if ( s_ulWaits == 1 || ( bTimedOut && s_ulTimeouts == 1 ) || s_ulWaits % 300 == 0 )
++            xdg_log.infof( "Venus: next output image still held by the host compositor; waited %.1f ms (%s, %lu waits, %lu timeouts)",
++                ( get_time_in_nanos() - ulStart ) / 1'000'000.0, bTimedOut ? "timed out, overwriting" : "released",
++                (unsigned long)s_ulWaits, (unsigned long)s_ulTimeouts );
++    }
++
+     int CWaylandConnector::Present( const FrameInfo_t *pFrameInfo, bool bAsync )
+     {
+         UpdateFullscreenState();
+@@ -1110,6 +1184,17 @@ namespace gamescope
+ 
+             bNeedsFullComposite |= !!(g_uCompositeDebug & CompositeDebugFlag::Heatmap);
+ 
++            if ( VenusSession() )
++            {
++                static bool s_bSaidForceCleared = false;
++                if ( !cv_composite_force && !s_bSaidForceCleared )
++                {
++                    s_bSaidForceCleared = true;
++                    xdg_log.infof( "Venus: composite_force was cleared (Steam's GAMESCOPE_COMPOSITE_FORCE); still compositing every frame" );
++                }
++                bNeedsFullComposite = true;
++            }
++
+             if ( !bNeedsFullComposite )
+             {
+                 bool bNeedsBacking = true;
+@@ -1147,6 +1232,9 @@ namespace gamescope
+             }
+             else
+             {
++                if ( VenusSession() )
++                    WaitForOutputImageRelease( m_pBackend->GetDisplay() );
++
+                 std::optional oCompositeResult = vulkan_composite( (FrameInfo_t *)pFrameInfo, nullptr, false );
+ 
+                 if ( !oCompositeResult )
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+index 1d89c57..b30addf 100644
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -4788,6 +4788,14 @@ gamescope::Rc<CVulkanTexture> vulkan_get_last_output_image( bool partial, bool d
+ 	return g_output.outputImages[ nOutImage ];
+ }
+ 
++gamescope::Rc<CVulkanTexture> vulkan_get_next_output_image()
++{
++	if ( g_output.outputImages.empty() )
++		return nullptr;
++
++	return g_output.outputImages[ g_output.nOutImage ];
++}
++
+ bool vulkan_primary_dev_id(dev_t *id)
+ {
+ 	*id = g_device.primaryDevId();
+diff --git a/src/rendervulkan.hpp b/src/rendervulkan.hpp
+index 6cd5a41..94d28f5 100644
+--- a/src/rendervulkan.hpp
++++ b/src/rendervulkan.hpp
+@@ -468,6 +468,8 @@ gamescope::OwningRc<CVulkanTexture> vulkan_create_texture_from_wlr_buffer( struc
+ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamescope::Rc<CVulkanTexture> pScreenshotTexture, bool partial, gamescope::Rc<CVulkanTexture> pOutputOverride = nullptr, bool increment = true, std::unique_ptr<CVulkanCmdBuffer> pInCommandBuffer = nullptr );
+ void vulkan_wait( uint64_t ulSeqNo, bool bReset );
+ gamescope::Rc<CVulkanTexture> vulkan_get_last_output_image( bool partial, bool defer );
++// The output image the next full composite writes (nested backends without a swapchain).
++gamescope::Rc<CVulkanTexture> vulkan_get_next_output_image();
+ gamescope::Rc<CVulkanTexture> vulkan_acquire_screenshot_texture(uint32_t width, uint32_t height, bool exportable, uint32_t drmFormat, EStreamColorspace colorspace = k_EStreamColorspace_Unknown);
+ gamescope::Rc<CVulkanTexture> vulkan_acquire_capture_texture(uint32_t width, uint32_t height, bool exportable, uint32_t drmFormat, EStreamColorspace colorspace = k_EStreamColorspace_Unknown);
+ uint32_t vulkan_get_rgb10_capture_format( void );
